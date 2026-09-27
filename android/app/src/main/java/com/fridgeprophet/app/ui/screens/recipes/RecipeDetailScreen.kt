@@ -14,9 +14,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -24,22 +27,29 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.fridgeprophet.app.R
+import com.fridgeprophet.app.data.remote.dto.CookPlan
 import com.fridgeprophet.app.data.remote.dto.NutritionEstimate
 import com.fridgeprophet.app.data.remote.dto.RecipeIngredientOut
 import com.fridgeprophet.app.data.remote.dto.RecipeOut
@@ -119,9 +129,24 @@ fun RecipeDetailScreen(
                     message = state.message,
                     error = state.error,
                     feedbackSent = state.feedbackSent,
+                    loadingPlan = state.loadingPlan,
                     onDismissMessage = viewModel::clearMessages,
                     onBuildShopping = { viewModel.buildShoppingList(onSuccess = {}) },
                     onFeedback = viewModel::sendFeedback,
+                    onCook = viewModel::openCookDialog,
+                )
+            }
+
+            // 做菜确认弹窗。放在 Box 这一层而不是 content 内部 ——
+            // 它是覆盖层，不该跟着内容一起滚。
+            state.cookPlan?.let { plan ->
+                CookDialog(
+                    plan = plan,
+                    amounts = state.cookAmounts,
+                    cooking = state.cooking,
+                    onAmountChange = viewModel::setCookAmount,
+                    onConfirm = viewModel::confirmCook,
+                    onDismiss = viewModel::dismissCookDialog,
                 )
             }
         }
@@ -135,9 +160,11 @@ private fun RecipeDetailContent(
     message: String?,
     error: String?,
     feedbackSent: String?,
+    loadingPlan: Boolean,
     onDismissMessage: () -> Unit,
     onBuildShopping: () -> Unit,
     onFeedback: (String) -> Unit,
+    onCook: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -357,11 +384,6 @@ private fun RecipeDetailContent(
                 ) { Text("收藏") }
 
                 OutlinedButton(
-                    onClick = { onFeedback("cook") },
-                    modifier = Modifier.weight(1f),
-                ) { Text("做过") }
-
-                OutlinedButton(
                     onClick = { onFeedback("skip") },
                     modifier = Modifier.weight(1f),
                 ) { Text("不想吃") }
@@ -374,6 +396,30 @@ private fun RecipeDetailContent(
                     color = SemanticColors.fresh,
                     modifier = Modifier.padding(top = 10.dp),
                 )
+            }
+        }
+
+        // ---------- 我做这道菜了 ----------
+        // 「做完一道菜」的正规入口：先给一份扣减预览，用户能改数再确认。
+        //
+        // 原来那排按钮里的「做过」已经并到这里了 —— 两个按钮都表示
+        // 「我做了这道菜」会让人不知道该点哪个，而弹窗里那个
+        // 「同时更新冰箱库存」的勾选框正好覆盖了「只记录、不动库存」的旧用法。
+        Button(
+            onClick = onCook,
+            enabled = !loadingPlan,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(52.dp),
+        ) {
+            if (loadingPlan) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(20.dp),
+                    strokeWidth = 2.dp,
+                    color = MaterialTheme.colorScheme.onPrimary,
+                )
+            } else {
+                Text(text = "我做这道菜了", style = MaterialTheme.typography.titleMedium)
             }
         }
 
@@ -502,4 +548,131 @@ private fun difficultyLabel(difficulty: String): String = when (difficulty) {
     "easy" -> "简单"
     "medium" -> "中等"
     else -> "较难"
+}
+
+/** 2.0 显示成「2」、1.5 显示成「1.5」，别让人看见「2.0」这种尾巴。 */
+private fun fmtQty(v: Double?): String {
+    if (v == null) return "0"
+    return if (v % 1.0 == 0.0) v.toInt().toString() else v.toString()
+}
+
+/**
+ * 做菜确认弹窗。
+ *
+ * 扣库存**不可逆**（扣完那行食材就没了），所以每一步都要摊开给用户看：
+ *   - 会用掉什么、冰箱里现在有多少
+ *   - 每项扣多少，可以改；清空或填 0 就是不扣这项
+ *   - 单位对不上的项**留空**，等用户自己填（后端不猜，见 cook-plan 的说明）
+ *   - 一个勾选框决定到底动不动库存
+ *
+ * 取消 = 什么都不发生：库存不扣，也不记「做过」。
+ */
+@Composable
+private fun CookDialog(
+    plan: CookPlan,
+    amounts: Map<Int, String>,
+    cooking: Boolean,
+    onAmountChange: (Int, String) -> Unit,
+    onConfirm: (Boolean) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    // 默认勾上：多数人点「我做这道菜了」就是想同步库存。
+    // key 用 recipeId，换一道菜时重置回默认值。
+    var updateStock by remember(plan.recipeId) { mutableStateOf(true) }
+
+    AlertDialog(
+        // 提交过程中别让点外面关掉，否则请求还在飞、界面已经没了
+        onDismissRequest = { if (!cooking) onDismiss() },
+        title = { Text("做「${plan.recipeName}」") },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text(
+                    text = "确认后会按下面的量从冰箱扣减。数字可以改；清空或填 0 表示这项不动。",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+
+                plan.items.forEach { item ->
+                    val id = item.stockItemId ?: return@forEach
+                    val typed = amounts[id].orEmpty()
+
+                    Column {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(text = item.name, style = MaterialTheme.typography.bodyLarge)
+                            Text(
+                                text = "冰箱还有 ${fmtQty(item.stockQuantity)}${item.stockUnit.orEmpty()}",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+
+                        OutlinedTextField(
+                            value = typed,
+                            onValueChange = { onAmountChange(id, it) },
+                            label = { Text(if (item.unitMatched) "扣减量" else "需要你填") },
+                            suffix = { Text(item.stockUnit.orEmpty()) },
+                            singleLine = true,
+                            // 单位对不上又没填 → 标红提醒，但不拦着提交
+                            // （用户可能就是想让这项不动）
+                            isError = !item.unitMatched && typed.isBlank(),
+                            supportingText = {
+                                Text(
+                                    text = if (item.unitMatched) {
+                                        val need = "菜谱需要 ${fmtQty(item.needQuantity)}${item.needUnit}"
+                                        if (item.willEmpty) "$need —— 按这个量扣完就用光了" else need
+                                    } else {
+                                        "库存记的是「${item.stockUnit}」，菜谱要「${item.needUnit}」，" +
+                                            "没法自动换算，请按冰箱里的单位自己填"
+                                    },
+                                )
+                            },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                }
+
+                if (plan.missing.isNotEmpty()) {
+                    Text(
+                        text = "冰箱里没有（不参与扣减）：" +
+                            plan.missing.joinToString("、") {
+                                "${it.name} ${fmtQty(it.quantity)}${it.unit}"
+                            },
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = updateStock, onCheckedChange = { updateStock = it })
+                    Text(text = "同时更新冰箱库存", style = MaterialTheme.typography.bodyMedium)
+                }
+                if (!updateStock) {
+                    Text(
+                        text = "不勾选就只记一笔「做过」，冰箱里的东西一样都不动。",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = !cooking,
+                onClick = { onConfirm(updateStock) },
+            ) { Text(if (cooking) "处理中…" else "确认") }
+        },
+        dismissButton = {
+            TextButton(enabled = !cooking, onClick = onDismiss) { Text("取消") }
+        },
+    )
 }

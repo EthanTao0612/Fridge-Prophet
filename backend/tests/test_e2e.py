@@ -464,6 +464,100 @@ def main() -> int:
               victim["name"] in regen_names,
               f"删了「{victim['name']}」，重新生成后列表是 {regen_names}")
 
+        print("\n=== 6d. 做菜扣库存 ===")
+        # 造一份确定的库存，这样扣减结果能精确断言。
+        # 选「番茄鸡蛋豆腐」当样本，它正好覆盖三种情况：
+        #   鸡蛋   → 单位一致，能自动算
+        #   豆腐   → 库存记「盒」、菜谱要「g」，单位对不上
+        #   小葱   → 冰箱里压根没有
+        client.delete("/api/v1/inventory", headers=headers)
+        for food, qty, unit in (("鸡蛋", 6, "个"), ("西红柿", 3, "个"), ("豆腐", 1, "盒")):
+            client.post("/api/v1/inventory", headers=headers,
+                        json={"food_name": food, "quantity": qty, "unit": unit})
+
+        def stock_of(food: str):
+            rows = client.get("/api/v1/inventory", headers=headers).json()
+            hit = next((x for x in rows if x["food_name"] == food), None)
+            return None if hit is None else hit["quantity"]
+
+        pool = client.get("/api/v1/recipes", headers=headers).json()
+        target = next((x for x in pool if x["name"] == "番茄鸡蛋豆腐"), None)
+        check("找到样本菜谱「番茄鸡蛋豆腐」", target is not None,
+              str([x["name"] for x in pool]))
+        cook_id = target["id"] if target else pool[0]["id"]
+
+        # ---- 预览：只算不扣 ----
+        r = client.get(f"/api/v1/recipes/{cook_id}/cook-plan", headers=headers)
+        check("扣减预览 200", r.status_code == 200, r.text[:300])
+        plan = r.json() if r.status_code == 200 else {}
+        items = {i["name"]: i for i in plan.get("items", [])}
+
+        check("鸡蛋匹配到了库存行",
+              items.get("鸡蛋", {}).get("stock_item_id") is not None,
+              str(items.get("鸡蛋")))
+        check("单位一致 → 建议扣 2 个",
+              items.get("鸡蛋", {}).get("suggested_deduct") == 2
+              and items.get("鸡蛋", {}).get("unit_matched") is True,
+              str(items.get("鸡蛋")))
+        check("单位对不上（盒 vs g）→ 不猜，建议量为空",
+              items.get("豆腐", {}).get("unit_matched") is False
+              and items.get("豆腐", {}).get("suggested_deduct") is None,
+              str(items.get("豆腐")))
+        check("冰箱里没有的小葱归到 missing，不参与扣减",
+              "小葱" not in items
+              and any(m["name"] == "小葱" for m in plan.get("missing", [])),
+              str(plan.get("missing")))
+        check("预览不修改库存", stock_of("鸡蛋") == 6,
+              f"预览后鸡蛋 = {stock_of('鸡蛋')}")
+
+        # ---- 执行：按系统估算扣 ----
+        r = client.post(f"/api/v1/recipes/{cook_id}/cook", headers=headers, json={})
+        check("执行扣减 200", r.status_code == 200, r.text[:300])
+        result = r.json() if r.status_code == 200 else {}
+        check("鸡蛋 6 → 4", stock_of("鸡蛋") == 4, f"实际 {stock_of('鸡蛋')}")
+        check("单位对不上的豆腐原封不动", stock_of("豆腐") == 1,
+              f"实际 {stock_of('豆腐')}")
+        check("没扣的记进 skipped", "豆腐" in result.get("skipped", []),
+              str(result.get("skipped")))
+        check("扣减明细里有鸡蛋 2 个",
+              any(d["name"] == "鸡蛋" and d["quantity"] == 2 for d in result.get("deducted", [])),
+              str(result.get("deducted")))
+
+        # ---- 执行：用户自己填的量优先 ----
+        tofu_id = items.get("豆腐", {}).get("stock_item_id")
+        r = client.post(f"/api/v1/recipes/{cook_id}/cook", headers=headers,
+                        json={"deductions": [{"item_id": tofu_id, "quantity": 1}]})
+        check("用户手填的量能覆盖「单位对不上就不扣」",
+              r.status_code == 200 and stock_of("豆腐") is None,
+              f"豆腐 = {stock_of('豆腐')}（应为 None，即用完被移除）")
+        check("用完的食材被移除而不是留一条 0",
+              all(x["food_name"] != "豆腐"
+                  for x in client.get("/api/v1/inventory", headers=headers).json()))
+
+        # ---- 空 deductions：只记行为，不动库存 ----
+        eggs_before = stock_of("鸡蛋")
+        r = client.post(f"/api/v1/recipes/{cook_id}/cook", headers=headers,
+                        json={"deductions": []})
+        check("deductions 传空数组 = 只记行为不改库存",
+              r.status_code == 200 and stock_of("鸡蛋") == eggs_before,
+              f"{eggs_before} → {stock_of('鸡蛋')}")
+        check("空扣减时 note 说明是「按你的选择」，而不是甩锅给缺料",
+              "按你的选择" in r.json().get("note", ""), str(r.json().get("note")))
+        check("用户主动不改库存时 skipped 应为空（不然像出错了）",
+              r.json().get("skipped") == [], str(r.json().get("skipped")))
+
+        # ---- 做菜会喂给口味画像 ----
+        r = client.get("/api/v1/recipes/insights/preference", headers=headers)
+        check("做过的菜进了口味画像",
+              r.status_code == 200 and "番茄鸡蛋豆腐" in r.json().get("frequently_cooked", []),
+              str(r.json().get("frequently_cooked")))
+
+        # ---- 边界 ----
+        r = client.get("/api/v1/recipes/999999/cook-plan", headers=headers)
+        check("不存在的菜谱 → 404", r.status_code == 404, r.text[:200])
+        r = client.post("/api/v1/recipes/999999/cook", headers=headers, json={})
+        check("给不存在的菜谱扣库存 → 404", r.status_code == 404, r.text[:200])
+
         print("\n=== 7. 菜谱详情与行为反馈 ===")
         r = client.get("/api/v1/recipes", headers=headers)
         check("菜谱列表", r.status_code == 200 and len(r.json()) == 3, r.text[:300])

@@ -403,6 +403,62 @@ def main() -> int:
         )
         print(f"         库存：{len(inv_names)} 种 → {len(final_names)} 种")
 
+    # ---------- 8b. 做菜扣库存 ----------
+    section("8b", "做菜扣库存（先预览、再确认；可改量、可取消）")
+
+    def inv_now() -> dict[str, float]:
+        _, rows = c.get("/api/v1/inventory")
+        return {x["food_name"]: x["quantity"] for x in (rows or [])}
+
+    stock_before = inv_now()
+    check("能读到扣减前的库存", bool(stock_before), str(stock_before)[:200])
+
+    status, plan = c.get(f"/api/v1/recipes/{recipe_id}/cook-plan")
+    if check("扣减预览可读", status == 200, f"HTTP {status} {plan}"):
+        items = plan.get("items") or []
+        check("预览列出了会用到的食材",
+              bool(items) or bool(plan.get("missing")), str(plan)[:200])
+        # 这条是核心契约：单位一致才给建议量，不一致必须留空让用户填
+        check("单位一致才有建议扣减量，不一致的留空",
+              all((i["suggested_deduct"] is not None) == bool(i["unit_matched"])
+                  for i in items),
+              str([(i["name"], i["unit_matched"], i["suggested_deduct"]) for i in items]))
+        check("预览不写库（只是看一眼）", inv_now() == stock_before,
+              f"{stock_before} → {inv_now()}")
+
+    # 「取消」= 压根不调接口，什么都不会发生，这条不需要测。
+    # 这里测的是另一条路：明确传空列表 = 只记「做过」，一样都不动。
+    status, res = c.post(f"/api/v1/recipes/{recipe_id}/cook",
+                         json_body={"deductions": []})
+    if check("只记录不改库存 成功", status == 200, f"HTTP {status} {res}"):
+        check("说明是「按你的选择」而不是甩锅给缺料",
+              "按你的选择" in (res.get("note") or ""), str(res.get("note")))
+        check("没有误报 skipped", not res.get("skipped"), str(res.get("skipped")))
+    check("库存确实一点没动", inv_now() == stock_before,
+          f"{stock_before} → {inv_now()}")
+
+    status, res = c.post(f"/api/v1/recipes/{recipe_id}/cook", json_body={})
+    if check("按系统估算扣减 成功", status == 200, f"HTTP {status} {res}"):
+        deducted = res.get("deducted") or []
+        check("返回了扣减明细", bool(deducted), str(res)[:200])
+        now = inv_now()
+        for d in deducted:
+            if d["emptied"]:
+                check(f"{d['name']} 用完了被移出冰箱",
+                      d["name"] not in now, str(now))
+            else:
+                check(f"{d['name']} 数量按明细减少",
+                      now.get(d["name"]) == d["remaining"],
+                      f"期望剩 {d['remaining']}，实际 {now.get(d['name'])}")
+        if res.get("skipped"):
+            check("跳过的项没有被误扣",
+                  all(inv_now().get(n) == stock_before.get(n) for n in res["skipped"]
+                      if n in stock_before),
+                  f"skipped={res['skipped']}")
+
+    status, _ = c.get("/api/v1/recipes/999999/cook-plan")
+    check("不存在的菜谱 → 404", status == 404, f"HTTP {status}")
+
     # ---------- 9. 数据隔离 ----------
     section("9", "数据隔离（别人的数据你看不到）")
     other = Client(base)

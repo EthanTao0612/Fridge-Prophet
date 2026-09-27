@@ -10,6 +10,10 @@ from app.models.inventory import FoodInventory
 from app.models.recipe import MealHistory, Recipe, RecipeFeedback, RecipeIngredient
 from app.models.user import HealthPreference
 from app.schemas.recipe import (
+    CookDeducted,
+    CookPlan,
+    CookRequest,
+    CookResult,
     MealActionRequest,
     NutritionEstimate,
     RecipeGenerateRequest,
@@ -18,7 +22,11 @@ from app.schemas.recipe import (
     RecipeOut,
 )
 from app.services.food_image_service import resolve_image_url
-from app.services.recipe_service import generate_recipes, recompute_availability
+from app.services.recipe_service import (
+    build_cook_plan,
+    generate_recipes,
+    recompute_availability,
+)
 
 router = APIRouter(prefix="/recipes", tags=["AI 菜谱"])
 
@@ -126,18 +134,35 @@ def _persist_or_update(db: Session, user_id: int, recipe: RecipeOut) -> Recipe:
     return existing
 
 
+def _ingredients_of(row: Recipe) -> list[RecipeIngredientOut]:
+    """从菜谱行取出配料表。详情、列表、做菜预览都用它，别各写一份。"""
+    return [
+        RecipeIngredientOut(
+            name=i.name, quantity=i.quantity, unit=i.unit, optional=i.optional
+        )
+        for i in row.ingredients
+    ]
+
+
+def _load_owned_recipe(db: Session, user_id: int, recipe_id: int) -> Recipe:
+    """取自己的菜谱，取不到就 404。做菜相关的接口都要先过这一关。"""
+    row = (
+        db.query(Recipe)
+        .filter(Recipe.id == recipe_id, Recipe.user_id == user_id)
+        .one_or_none()
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="菜谱不存在")
+    return row
+
+
 def _row_to_out(row: Recipe) -> RecipeOut:
     try:
         nutrition = NutritionEstimate(**(row.nutrition or {}))
     except Exception:  # noqa: BLE001
         nutrition = NutritionEstimate()
 
-    ingredient_outs = [
-        RecipeIngredientOut(
-            name=i.name, quantity=i.quantity, unit=i.unit, optional=i.optional
-        )
-        for i in row.ingredients
-    ]
+    ingredient_outs = _ingredients_of(row)
 
     # 库里没存配图时现场算一个。
     # 这样有两个好处：① 老菜谱不用跑数据迁移就能补上配图；
@@ -246,6 +271,138 @@ def get_recipe(recipe_id: int, user: CurrentUser, db: DbSession) -> RecipeOut:
     db.add(MealHistory(user_id=user.id, recipe_id=row.id, action="view"))
     db.commit()
     return out
+
+
+@router.get("/{recipe_id}/cook-plan", response_model=CookPlan,
+            summary="做这道菜会扣掉冰箱里什么（做菜前的预览）")
+def get_cook_plan(recipe_id: int, user: CurrentUser, db: DbSession) -> CookPlan:
+    """做菜前的预览。
+
+    **为什么扣库存要先预览**：扣减不可逆 —— 扣完那行食材就没了。
+    不能点一下按钮就闷头扣，得先让用户看见「会用掉什么、各多少」，
+    能改数字，再确认。取消就什么都不动。
+    """
+    row = _load_owned_recipe(db, user.id, recipe_id)
+    inventory = _load_inventory(db, user.id)
+    return build_cook_plan(
+        recipe_id=row.id,
+        recipe_name=row.name,
+        ingredients=_ingredients_of(row),
+        inventory=inventory,
+    )
+
+
+@router.post("/{recipe_id}/cook", response_model=CookResult,
+             summary="做这道菜：按实际用量扣减冰箱库存")
+def cook_recipe(
+    recipe_id: int,
+    payload: CookRequest,
+    user: CurrentUser,
+    db: DbSession,
+) -> CookResult:
+    """扣库存 + 记一笔「做过」。
+
+    `deductions` 留空 = 按系统估算扣；传了 = 按用户改过的量扣。
+    传空列表 `[]` 是有意义的 —— 表示「我做了这道菜，但不想改库存」，
+    这时候只记行为、不动库存。
+    """
+    row = _load_owned_recipe(db, user.id, recipe_id)
+    inventory = _load_inventory(db, user.id)
+    plan = build_cook_plan(
+        recipe_id=row.id,
+        recipe_name=row.name,
+        ingredients=_ingredients_of(row),
+        inventory=inventory,
+    )
+
+    # 要扣哪些、各扣多少
+    if payload.deductions is None:
+        # 按系统估算：单位对得上的才扣（suggested_deduct 为 None 的一律跳过）
+        wanted: dict[int, float] = {
+            it.stock_item_id: it.suggested_deduct
+            for it in plan.items
+            if it.stock_item_id is not None and it.suggested_deduct
+        }
+    else:
+        wanted = {d.item_id: d.quantity for d in payload.deductions}
+
+    # 只认自己冰箱里的东西 —— 传别人的 item_id 在这里自然落空
+    owned_by_id = {it.id: it for it in inventory}
+
+    deducted: list[CookDeducted] = []
+    for item_id, want in wanted.items():
+        item = owned_by_id.get(item_id)
+        if item is None:
+            continue
+        have = float(item.quantity or 0)
+        if want <= 0 or have <= 0:
+            continue
+
+        take = round(min(float(want), have), 2)
+        left = round(have - take, 2)
+        emptied = left <= 0
+
+        if emptied:
+            # 用完了就把这行删掉。留一条数量为 0 的记录只会在冰箱页当噪声，
+            # 「库存」表达的就是「现在还有什么」。
+            db.delete(item)
+        else:
+            item.quantity = left
+
+        deducted.append(
+            CookDeducted(
+                name=item.food_name,
+                quantity=take,
+                unit=item.unit,
+                remaining=0 if emptied else left,
+                emptied=emptied,
+            )
+        )
+
+    # 用户明确传空数组 = 「我做了这道菜，但别动库存」。
+    # 这和「想扣却扣不了（缺料 / 单位对不上）」是两回事，后面的文案要分开写。
+    user_declined = payload.deductions is not None and not payload.deductions
+
+    # 没扣成的：缺料的、单位对不上又没手填的、用户填 0 的。
+    # 用户主动放弃时不算 skipped —— 否则前端会弹一句「有 4 样没扣」
+    # 去解释一件用户自己决定的事，看着像出错了。
+    if user_declined:
+        skipped = []
+    else:
+        taken_names = {d.name for d in deducted}
+        skipped = [it.name for it in plan.items if it.name not in taken_names]
+
+    if payload.record_history:
+        # 记一笔「做过」，喂给口味画像（策划书第七节的「AI 会学习」）
+        db.add(
+            MealHistory(
+                user_id=user.id,
+                recipe_id=row.id,
+                action="cook",
+                cooked_at=datetime.now(timezone.utc),
+            )
+        )
+
+    db.commit()
+
+    if deducted:
+        note = f"已从冰箱扣掉 {len(deducted)} 样食材。"
+        if skipped:
+            note += f"另有 {len(skipped)} 样没动（缺料或单位对不上）。"
+    elif user_declined:
+        note = "已记下「做过这道菜」，按你的选择没有改动库存。"
+    elif skipped:
+        note = "这次没有改动库存 —— 需要的食材冰箱里都没有，或者单位对不上。"
+    else:
+        note = "已记下「做过这道菜」，库存未改动。"
+
+    return CookResult(
+        recipe_id=row.id,
+        recipe_name=row.name,
+        deducted=deducted,
+        skipped=skipped,
+        note=note,
+    )
 
 
 @router.delete("/{recipe_id}", status_code=status.HTTP_204_NO_CONTENT, summary="删除菜谱")

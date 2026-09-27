@@ -4,6 +4,9 @@ import com.fridgeprophet.app.data.remote.dto.AiStatus
 import com.fridgeprophet.app.data.remote.dto.CommentCreateRequest
 import com.fridgeprophet.app.data.remote.dto.CommentListOut
 import com.fridgeprophet.app.data.remote.dto.CommentOut
+import com.fridgeprophet.app.data.remote.dto.CookPlan
+import com.fridgeprophet.app.data.remote.dto.CookRequest
+import com.fridgeprophet.app.data.remote.dto.CookResult
 import com.fridgeprophet.app.data.remote.dto.FeedOut
 import com.fridgeprophet.app.data.remote.dto.FollowResultOut
 import com.fridgeprophet.app.data.remote.dto.FollowUserOut
@@ -187,6 +190,14 @@ interface FridgeApi {
 
     @POST("api/v1/recipes/feedback")
     suspend fun submitFeedback(@Body body: MealActionRequest): ResponseBody
+
+    /** 做这道菜会扣掉冰箱里什么（只算不扣，供确认弹窗展示）。 */
+    @GET("api/v1/recipes/{id}/cook-plan")
+    suspend fun getCookPlan(@Path("id") id: Int): CookPlan
+
+    /** 确认做菜：按实际用量扣减库存。 */
+    @POST("api/v1/recipes/{id}/cook")
+    suspend fun cookRecipe(@Path("id") id: Int, @Body body: CookRequest): CookResult
 
     @GET("api/v1/recipes/insights/preference")
     suspend fun preferenceInsights(): PreferenceInsights

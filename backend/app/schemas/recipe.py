@@ -84,3 +84,79 @@ class MealActionRequest(BaseModel):
     recipe_id: int
     action: Literal["view", "favorite", "cook", "skip", "rate"]
     rating: int | None = Field(default=None, ge=1, le=5)
+
+
+# ---------------------------------------------------------------
+#  做菜扣库存
+# ---------------------------------------------------------------
+
+
+class CookPlanItem(BaseModel):
+    """扣减预览里的一项。
+
+    前端拿它渲染「这道菜会用掉什么」的清单，每项的数量用户可以改。
+    """
+
+    name: str
+    need_quantity: float = 0
+    need_unit: str = "g"
+
+    # 冰箱里对应的那件食材。没有 = 本来就缺料，扣不了
+    stock_item_id: int | None = None
+    stock_quantity: float | None = None
+    stock_unit: str | None = None
+
+    # 系统建议扣多少。**单位对不上时为 None** —— 不猜，让用户自己填。
+    # 这和 recompute_availability / compute_missing 是同一条规则：
+    # 单位无法换算时按「大概率有」处理，宁可让用户多填一次，也不瞎扣。
+    suggested_deduct: float | None = None
+    unit_matched: bool = False
+
+    # 按建议量扣完就没了 —— 前端据此提示「鸡蛋会用完」
+    will_empty: bool = False
+    optional: bool = False
+
+
+class CookPlan(BaseModel):
+    recipe_id: int
+    recipe_name: str
+    items: list[CookPlanItem] = Field(default_factory=list)
+    # 冰箱里压根没有的（本来就缺的料），这些不参与扣减
+    missing: list[MissingIngredient] = Field(default_factory=list)
+
+
+class CookDeduction(BaseModel):
+    """用户确认后提交的一条扣减。"""
+
+    item_id: int
+    quantity: float = Field(default=0, ge=0)
+
+
+class CookRequest(BaseModel):
+    """做菜扣库存。
+
+    `deductions` 留空 = 按系统估算扣；
+    传了 = 按用户改过的量扣（用户可自由改数量）。
+    """
+
+    deductions: list[CookDeduction] | None = None
+    # 是否顺带记一笔「做过这道菜」，喂给口味画像
+    record_history: bool = True
+
+
+class CookDeducted(BaseModel):
+    name: str
+    quantity: float
+    unit: str
+    remaining: float
+    # 扣完为 0，已从冰箱移除
+    emptied: bool = False
+
+
+class CookResult(BaseModel):
+    recipe_id: int
+    recipe_name: str
+    deducted: list[CookDeducted] = Field(default_factory=list)
+    # 缺料、或单位对不上又没手填量的，没扣
+    skipped: list[str] = Field(default_factory=list)
+    note: str = ""

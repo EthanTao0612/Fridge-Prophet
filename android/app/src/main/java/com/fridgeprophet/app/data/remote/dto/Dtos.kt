@@ -423,6 +423,68 @@ data class MealActionRequest(
     val rating: Int? = null,
 )
 
+// ---------- 做菜扣库存 ----------
+
+/**
+ * 扣减预览里的一项。
+ *
+ * [suggestedDeduct] 为 null 表示**单位对不上**（库存记「1 盒豆腐」、菜谱要「300 g」），
+ * 后端不猜，前端要渲染成空输入框让用户自己填。
+ * 别把它当 0 处理 —— 那会让人以为「扣了 0」，其实是什么都没发生。
+ */
+@Serializable
+data class CookPlanItem(
+    val name: String,
+    @SerialName("need_quantity") val needQuantity: Double = 0.0,
+    @SerialName("need_unit") val needUnit: String = "g",
+    @SerialName("stock_item_id") val stockItemId: Int? = null,
+    @SerialName("stock_quantity") val stockQuantity: Double? = null,
+    @SerialName("stock_unit") val stockUnit: String? = null,
+    @SerialName("suggested_deduct") val suggestedDeduct: Double? = null,
+    @SerialName("unit_matched") val unitMatched: Boolean = false,
+    @SerialName("will_empty") val willEmpty: Boolean = false,
+    val optional: Boolean = false,
+)
+
+@Serializable
+data class CookPlan(
+    @SerialName("recipe_id") val recipeId: Int = 0,
+    @SerialName("recipe_name") val recipeName: String = "",
+    val items: List<CookPlanItem> = emptyList(),
+    val missing: List<MissingIngredient> = emptyList(),
+)
+
+@Serializable
+data class CookDeduction(
+    @SerialName("item_id") val itemId: Int,
+    val quantity: Double = 0.0,
+)
+
+@Serializable
+data class CookRequest(
+    /** null = 按系统估算扣；空列表 = 只记行为、不动库存。 */
+    val deductions: List<CookDeduction>? = null,
+    @SerialName("record_history") val recordHistory: Boolean = true,
+)
+
+@Serializable
+data class CookDeducted(
+    val name: String,
+    val quantity: Double = 0.0,
+    val unit: String = "g",
+    val remaining: Double = 0.0,
+    val emptied: Boolean = false,
+)
+
+@Serializable
+data class CookResult(
+    @SerialName("recipe_id") val recipeId: Int = 0,
+    @SerialName("recipe_name") val recipeName: String = "",
+    val deducted: List<CookDeducted> = emptyList(),
+    val skipped: List<String> = emptyList(),
+    val note: String = "",
+)
+
 @Serializable
 data class PreferenceInsights(
     @SerialName("total_interactions") val totalInteractions: Int = 0,

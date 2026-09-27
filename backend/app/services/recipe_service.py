@@ -15,6 +15,8 @@ from app.core.config import settings
 from app.models.inventory import FoodInventory
 from app.models.user import HealthPreference, UserPreference
 from app.schemas.recipe import (
+    CookPlan,
+    CookPlanItem,
     MissingIngredient,
     NutritionEstimate,
     RecipeIngredientOut,
@@ -154,6 +156,21 @@ def _normalize_unit(u: str) -> str:
     return (u or "").strip().lower()
 
 
+def _index_stock(inventory: list[FoodInventory]) -> dict[str, FoodInventory]:
+    """把库存按食材名索引，同名的取第一条。
+
+    ⚠️ `recompute_availability` 和 `build_cook_plan` **必须共用这一个索引**。
+    以前「有没有这种食材」有两处实现，结果单位对不上时两边结论相反
+    （菜谱页显示「豆腐 ✓ 有」、采购页却让你去买豆腐），见 MEMORY.md 铁律 6。
+    做菜扣库存是第三处用到它的地方，更要共用 ——
+    否则会出现「菜谱说食材齐全，一点『做这道菜』却告诉你冰箱里找不到」。
+    """
+    stock: dict[str, FoodInventory] = {}
+    for it in inventory:
+        stock.setdefault(it.food_name.strip(), it)
+    return stock
+
+
 def recompute_availability(
     ingredients: list[RecipeIngredientOut], inventory: list[FoodInventory]
 ) -> list[MissingIngredient]:
@@ -172,9 +189,7 @@ def recompute_availability(
         3. 单位对不上且无法换算 → **按「大概率有」处理，不列入采购**。
            让用户去买冰箱里已经有的东西，比漏买一样更糟。
     """
-    stock: dict[str, FoodInventory] = {}
-    for it in inventory:
-        stock.setdefault(it.food_name.strip(), it)
+    stock = _index_stock(inventory)
 
     missing: list[MissingIngredient] = []
 
@@ -400,3 +415,69 @@ def generate_recipes(
         )
 
     return results[:count], model_name
+
+
+def build_cook_plan(
+    *,
+    recipe_id: int,
+    recipe_name: str,
+    ingredients: list[RecipeIngredientOut],
+    inventory: list[FoodInventory],
+) -> CookPlan:
+    """做菜前算一遍「这道菜会用掉冰箱里哪些东西、各扣多少」。
+
+    **为什么要有这个预览**：扣库存是不可逆的（扣完那行就没了），
+    不能点一下就闷头扣。用户得先看见清单、能改数字、再确认。
+
+    **为什么单位对不上时不猜**：库存记「1 盒豆腐」、菜谱要「300 g」，
+    两者没法换算。这时候给个「大概扣 300」是错的（可能把整盒扣没），
+    给 0 也是错的（用户以为扣了）。所以 `suggested_deduct=None`，
+    前端渲染成空输入框让用户自己填 —— 和 `recompute_availability`
+    对单位不一致时按「大概率有」处理是同一个态度：不装懂。
+    """
+    stock = _index_stock(inventory)
+    items: list[CookPlanItem] = []
+    missing: list[MissingIngredient] = []
+
+    for ing in ingredients:
+        owned = stock.get(ing.name.strip())
+
+        if owned is None:
+            # 冰箱里没有 —— 和缺料判断保持一致，不参与扣减
+            missing.append(
+                MissingIngredient(name=ing.name, quantity=ing.quantity, unit=ing.unit)
+            )
+            continue
+
+        have = float(owned.quantity or 0)
+        need = float(ing.quantity or 0)
+        matched = _normalize_unit(owned.unit) == _normalize_unit(ing.unit)
+
+        suggested: float | None = None
+        will_empty = False
+        if matched:
+            # 最多扣到 0，不能扣成负数
+            suggested = round(min(need, have), 2)
+            will_empty = suggested >= have
+
+        items.append(
+            CookPlanItem(
+                name=ing.name,
+                need_quantity=need,
+                need_unit=ing.unit,
+                stock_item_id=owned.id,
+                stock_quantity=have,
+                stock_unit=owned.unit,
+                suggested_deduct=suggested,
+                unit_matched=matched,
+                will_empty=will_empty,
+                optional=ing.optional,
+            )
+        )
+
+    return CookPlan(
+        recipe_id=recipe_id,
+        recipe_name=recipe_name,
+        items=items,
+        missing=missing,
+    )
