@@ -1,5 +1,6 @@
 package com.fridgeprophet.app.ui.screens.plaza
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -110,6 +111,8 @@ fun PostCard(
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        // 和 SectionCard 统一的发丝边框，全 App 卡片边界观感一致
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
     ) {
         Row(modifier = Modifier.padding(14.dp)) {
             // 头像单独可点：点进作者主页是社交产品的肌肉记忆，
