@@ -7,6 +7,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.fridgeprophet.app.ui.screens.auth.AuthScreen
+import com.fridgeprophet.app.ui.screens.family.FamilyScreen
 import com.fridgeprophet.app.ui.screens.main.MainScaffold
 import com.fridgeprophet.app.ui.screens.onboarding.OnboardingScreen
 import com.fridgeprophet.app.ui.screens.plaza.ComposePostScreen
@@ -73,6 +74,7 @@ fun AppRoot() {
                 onOpenRecipe = { id -> navController.navigate(Routes.recipeDetail(id)) },
                 onOpenTips = { navController.navigate(Routes.TIPS) },
                 onOpenTip = { id -> navController.navigate(Routes.tipDetail(id)) },
+                onOpenFamily = { navController.navigate(Routes.FAMILY) },
                 onOpenPost = { id -> navController.navigate(Routes.plazaPost(id)) },
                 onOpenAuthor = { id -> navController.navigate(Routes.plazaUser(id)) },
                 onOpenCompose = { navController.navigate(Routes.PLAZA_COMPOSE) },
@@ -112,6 +114,10 @@ fun AppRoot() {
                 onBack = { navController.popBackStack() },
                 onOpenPost = { id -> navController.navigate(Routes.plazaPost(id)) },
             )
+        }
+
+        composable(Routes.FAMILY) {
+            FamilyScreen(onBack = { navController.popBackStack() })
         }
 
         composable(Routes.TIPS) {

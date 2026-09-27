@@ -17,8 +17,14 @@ import com.fridgeprophet.app.data.remote.dto.PostOut
 import com.fridgeprophet.app.data.remote.dto.PublicProfileOut
 import com.fridgeprophet.app.data.remote.dto.ShareResultOut
 import com.fridgeprophet.app.data.remote.dto.ExpiringItem
+import com.fridgeprophet.app.data.remote.dto.FamilyCreateIn
+import com.fridgeprophet.app.data.remote.dto.FamilyInviteCodeIn
+import com.fridgeprophet.app.data.remote.dto.FamilyJoinIn
+import com.fridgeprophet.app.data.remote.dto.FamilyLeaveOut
 import com.fridgeprophet.app.data.remote.dto.FamilyMemberIn
 import com.fridgeprophet.app.data.remote.dto.FamilyMemberOut
+import com.fridgeprophet.app.data.remote.dto.FamilyOut
+import com.fridgeprophet.app.data.remote.dto.FamilyRoleUpdateIn
 import com.fridgeprophet.app.data.remote.dto.FoodTipDetail
 import com.fridgeprophet.app.data.remote.dto.FoodTipList
 import com.fridgeprophet.app.data.remote.dto.FoodTipRandom
@@ -134,6 +140,40 @@ interface FridgeApi {
 
     @DELETE("api/v1/users/family/{id}")
     suspend fun deleteFamily(@Path("id") id: Int)
+
+    // ---------- 家庭组（账号关联）----------
+    //
+    // ⚠️ 和上面那三个 /users/family 不是一回事：
+    //    /users/family  = 家人的**忌口档案**（对方不用注册，只影响菜谱推荐）
+    //    /family        = 我的**家庭组**（真实账号关联，共享冰箱和菜谱）
+    // 名字像，但用途完全不同。别把两者合并。
+
+    /** 没加入家庭时后端返回 **null**，所以返回类型必须可空。 */
+    @GET("api/v1/family")
+    suspend fun getFamily(): FamilyOut?
+
+    @POST("api/v1/family")
+    suspend fun createFamily(@Body body: FamilyCreateIn): FamilyOut
+
+    @POST("api/v1/family/join")
+    suspend fun joinFamily(@Body body: FamilyJoinIn): FamilyOut
+
+    /** 换邀请码，顺便定「拿这个码加入的人算什么身份」。只有家庭主能调。 */
+    @POST("api/v1/family/invite-code")
+    suspend fun regenerateInviteCode(@Body body: FamilyInviteCodeIn): FamilyOut
+
+    @PATCH("api/v1/family/members/{id}")
+    suspend fun updateFamilyMemberRole(
+        @Path("id") id: Int,
+        @Body body: FamilyRoleUpdateIn,
+    ): FamilyOut
+
+    @DELETE("api/v1/family/members/{id}")
+    suspend fun removeFamilyMember(@Path("id") id: Int): FamilyOut
+
+    @POST("api/v1/family/leave")
+    suspend fun leaveFamily(): FamilyLeaveOut
+
     // ---------- 冰箱库存 ----------
 
     @GET("api/v1/inventory")

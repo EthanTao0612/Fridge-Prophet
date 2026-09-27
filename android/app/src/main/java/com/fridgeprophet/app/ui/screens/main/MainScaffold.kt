@@ -42,6 +42,7 @@ fun MainScaffold(
     onOpenRecipe: (Int) -> Unit,
     onOpenTips: () -> Unit,
     onOpenTip: (String) -> Unit,
+    onOpenFamily: () -> Unit,
     onOpenPost: (Int) -> Unit,
     onOpenAuthor: (Int) -> Unit,
     onOpenCompose: () -> Unit,
@@ -111,6 +112,7 @@ fun MainScaffold(
                 MainTab.PROFILE -> ProfileScreen(
                     onLogout = onLogout,
                     onOpenTips = onOpenTips,
+                    onOpenFamily = onOpenFamily,
                 )
             }
         }

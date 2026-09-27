@@ -11,6 +11,9 @@ object Routes {
     const val RECIPE_DETAIL = "recipe/{recipeId}"
     fun recipeDetail(id: Int) = "recipe/$id"
 
+    // 家庭组：邀请家人一起管理冰箱
+    const val FAMILY = "family"
+
     // 贴士 id 是字符串（如 crab-with-tomato），不是数字，所以路由参数类型不同
     const val TIPS = "tips"
     const val TIP_DETAIL = "tip/{tipId}"

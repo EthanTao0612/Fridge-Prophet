@@ -136,6 +136,53 @@ data class FamilyMemberIn(
     val note: String? = null,
 )
 
+// ---------- 家庭组（账号关联）----------
+//
+// ⚠️ 别和上面的 FamilyMemberIn/Out 搞混：
+//    FamilyMember* 是「忌口档案」（爷爷不吃辣），对方不用注册；
+//    下面这些是「真实账号」（妈妈有自己的 App 账号），共享的是冰箱和菜谱。
+
+@Serializable
+data class FamilyAccountMember(
+    @SerialName("user_id") val userId: Int,
+    val nickname: String = "",
+    val email: String = "",
+    @SerialName("avatar_url") val avatarUrl: String? = null,
+    /** owner / member / viewer */
+    val role: String = "member",
+    @SerialName("joined_at") val joinedAt: String = "",
+    @SerialName("is_me") val isMe: Boolean = false,
+)
+
+@Serializable
+data class FamilyOut(
+    val id: Int = 0,
+    val name: String = "",
+    @SerialName("my_role") val myRole: String = "member",
+    val members: List<FamilyAccountMember> = emptyList(),
+    @SerialName("member_count") val memberCount: Int = 0,
+    /** 只读成员拿不到邀请码（后端返回 null）。 */
+    @SerialName("invite_code") val inviteCode: String? = null,
+)
+
+@Serializable
+data class FamilyCreateIn(val name: String = "我的家")
+
+@Serializable
+data class FamilyJoinIn(val code: String)
+
+@Serializable
+data class FamilyRoleUpdateIn(val role: String)
+
+@Serializable
+data class FamilyInviteCodeIn(val role: String = "member")
+
+@Serializable
+data class FamilyLeaveOut(
+    val dissolved: Boolean = false,
+    val message: String = "",
+)
+
 /**
  * 「别人在广场点开我主页时能看到什么」的开关。
  *

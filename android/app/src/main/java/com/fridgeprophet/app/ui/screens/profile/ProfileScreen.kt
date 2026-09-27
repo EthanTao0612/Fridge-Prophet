@@ -74,6 +74,7 @@ private val ACTIVITY_LEVELS = listOf("久坐", "轻度活动", "中度活动", "
 fun ProfileScreen(
     onLogout: () -> Unit,
     onOpenTips: () -> Unit,
+    onOpenFamily: () -> Unit,
     viewModel: ProfileViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -244,6 +245,39 @@ fun ProfileScreen(
                 }
             }
 
+            // ---------- 我的家庭（账号关联）----------
+            // ⚠️ 和下面「家人的忌口」那张卡不是一回事：
+            //   这张 = 真实账号关联（谁和我共享冰箱、什么身份）
+            //   那张 = 忌口档案（对方不用注册，只影响菜谱推荐）
+            // 两者并存，不要合并 —— 合并会让「没有账号的家人」无处安放。
+            item(key = "family-entry") {
+                SectionCard(modifier = Modifier.clickable(onClick = onOpenFamily)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "我的家庭",
+                                style = MaterialTheme.typography.titleMedium,
+                            )
+                            Text(
+                                text = "邀请家人一起管冰箱 —— 冰箱、菜谱、采购清单全家共享",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 2.dp),
+                            )
+                        }
+                        Text(
+                            text = "›",
+                            style = MaterialTheme.typography.titleLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+
             // ---------- 食品安全小贴士入口 ----------
             item(key = "tips-entry") {
                 SectionCard(modifier = Modifier.clickable(onClick = onOpenTips)) {
@@ -291,7 +325,9 @@ fun ProfileScreen(
                 )
             }
 
-            // ---------- 家庭成员 ----------
+            // ---------- 家人的忌口（档案，不是账号）----------
+            // 标题从「家庭成员」改成「家人的忌口」：上面刚加了「我的家庭」，
+            // 两张卡都叫「家庭」会让人以为重复了。实际一个管共享、一个管忌口。
             item(key = "family") {
                 SectionCard {
                     Row(
@@ -299,7 +335,7 @@ fun ProfileScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(text = "家庭成员", style = MaterialTheme.typography.titleMedium)
+                        Text(text = "家人的忌口", style = MaterialTheme.typography.titleMedium)
                         TextButton(onClick = { addingFamily = true }) { Text("+ 添加") }
                     }
                     Text(
