@@ -154,14 +154,27 @@ data class FamilyAccountMember(
     @SerialName("is_me") val isMe: Boolean = false,
 )
 
+/**
+ * 我的家庭。
+ *
+ * ⚠️ **后端永远返回这个对象**，没加入家庭时 `joined=false`、其余字段为空。
+ *
+ * 不要改回「后端返回裸 null、客户端用 `FamilyOut?` 接」—— 那样看着干净，
+ * 但**根本跑不通**：Retrofit + kotlinx-serialization 拿到的序列化器是非空的
+ * （Kotlin 的可空标记在 Java 的 `Type` 里丢了），喂一个字面量 `null` 会抛
+ * `JsonDecodingException`。结果是「没加入家庭的用户打开家庭页看到『出错了』」。
+ * 这个坑由 `FamilyContractTest` 用 MockWebServer 固定住。
+ */
 @Serializable
 data class FamilyOut(
+    /** false = 还没加入任何家庭。其余字段此时都是空值，不要拿它们判断。 */
+    val joined: Boolean = false,
     val id: Int = 0,
     val name: String = "",
     @SerialName("my_role") val myRole: String = "member",
     val members: List<FamilyAccountMember> = emptyList(),
     @SerialName("member_count") val memberCount: Int = 0,
-    /** 只读成员拿不到邀请码（后端返回 null）。 */
+    /** 只读成员拿不到邀请码（后端给 null）。 */
     @SerialName("invite_code") val inviteCode: String? = null,
 )
 

@@ -113,8 +113,24 @@ class FamilyAccountMember(BaseModel):
 
 
 class FamilyOut(BaseModel):
-    """我的家庭。没加入任何家庭时，接口返回 null 而不是空对象 ——
-    「没有家庭」和「有个空家庭」是两种状态，前端要分得开。"""
+    """我的家庭。
+
+    ⚠️ **不要改回「没家庭时返回裸 null」**。
+
+    一开始就是那么写的（`response_model=FamilyOut | None`），看着很干净，
+    但客户端根本吃不下：Retrofit + kotlinx-serialization 拿到的序列化器是
+    **非空**的（Kotlin 的可空标记在 Java 的 `Type` 里丢了），
+    给它喂一个字面量 `null` 会直接抛 `JsonDecodingException`。
+    结果是「没加入家庭的用户打开家庭页 → 看到『出错了』」，
+    而不是本该显示的创建/加入入口。这个 bug 只在真机上才暴露，
+    靠 `FamilyContractTest` 用 MockWebServer 才抓出来。
+
+    现在改成永远返回对象，用 `joined` 当显式开关：
+    「有没有家庭」是一个**字段**，不是一个可能不存在的响应体。
+    """
+
+    # 没加入任何家庭时是 false，此时其余字段都是空值。
+    joined: bool = True
 
     id: int
     name: str

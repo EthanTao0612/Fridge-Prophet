@@ -148,9 +148,15 @@ interface FridgeApi {
     //    /family        = 我的**家庭组**（真实账号关联，共享冰箱和菜谱）
     // 名字像，但用途完全不同。别把两者合并。
 
-    /** 没加入家庭时后端返回 **null**，所以返回类型必须可空。 */
+    /**
+     * 我的家庭。**没加入家庭时也返回对象**，看 `joined` 字段区分。
+     *
+     * ⚠️ 别把返回类型改成 `FamilyOut?` 去接一个裸 null ——
+     * Retrofit + kotlinx-serialization 吃不下，会抛 JsonDecodingException。
+     * 详见 `FamilyContractTest`。
+     */
     @GET("api/v1/family")
-    suspend fun getFamily(): FamilyOut?
+    suspend fun getFamily(): FamilyOut
 
     @POST("api/v1/family")
     suspend fun createFamily(@Body body: FamilyCreateIn): FamilyOut

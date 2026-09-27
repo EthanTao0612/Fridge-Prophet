@@ -52,6 +52,8 @@ def _out(db: Session, family: Family, my_role: str, me_id: int) -> FamilyOut:
     members.sort(key=lambda x: (x.role != "owner", x.joined_at))
 
     return FamilyOut(
+        # 显式写出来，不靠默认值 —— 默认值哪天被改了这个函数会静默出错
+        joined=True,
         id=family.id,
         name=family.name,
         my_role=my_role,
@@ -79,14 +81,27 @@ def _check_assignable(role: str) -> str:
     return role
 
 
-@router.get("", response_model=FamilyOut | None,
-            summary="我的家庭（没加入则返回 null）")
-def get_my_family(user: CurrentUser, db: DbSession) -> FamilyOut | None:
-    """没加入家庭时返回 **null**，不是空对象 ——
-    「没有家庭」和「有个空家庭」是两种状态，前端要分得开。"""
+@router.get("", response_model=FamilyOut,
+            summary="我的家庭（没加入时 joined=false）")
+def get_my_family(user: CurrentUser, db: DbSession) -> FamilyOut:
+    """**永远返回一个对象**，没加入家庭时 `joined=false`。
+
+    ⚠️ 别改回「没家庭时返回裸 null」。看着更干净，但客户端吃不下 ——
+    Retrofit + kotlinx-serialization 的序列化器是非空的，喂字面量 null 会抛
+    JsonDecodingException，用户看到的是「出错了」而不是创建/加入入口。
+    详见 schemas/user.py 里 FamilyOut 的注释。
+    """
     family, role = fam.my_family(db, user.id)
     if family is None:
-        return None
+        return FamilyOut(
+            joined=False,
+            id=0,
+            name="",
+            my_role="",
+            members=[],
+            member_count=0,
+            invite_code=None,
+        )
     return _out(db, family, role or "member", user.id)
 
 

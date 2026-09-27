@@ -23,8 +23,15 @@ import javax.inject.Singleton
 @Singleton
 class FamilyRepository @Inject constructor(private val api: FridgeApi) {
 
-    /** 我的家庭。没加入时拿到的是 null（不是空对象）—— 两种状态要分开渲染。 */
-    suspend fun my(): ApiResult<FamilyOut?> = safeApiCall { api.getFamily() }
+    /**
+     * 我的家庭。没加入时返回 `null`。
+     *
+     * 后端其实永远返回对象（`joined=false` 表示没加入），
+     * 这里把它翻译成 `null` —— 上层用 `FamilyOut?` 表达「有没有家庭」更自然，
+     * 也不用每处都记得去看 `joined`。
+     */
+    suspend fun my(): ApiResult<FamilyOut?> =
+        safeApiCall { api.getFamily().takeIf { it.joined } }
 
     suspend fun create(name: String): ApiResult<FamilyOut> =
         safeApiCall { api.createFamily(FamilyCreateIn(name)) }

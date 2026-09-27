@@ -470,10 +470,13 @@ def main() -> int:
     if check("家人账号注册成功", status in (200, 201), f"HTTP {status} {mate_data}"):
         mate.token = mate_data.get("access_token")
 
-        # 关键契约：没加入家庭时返回的是 **null**，不是 {}。
-        # 前端要靠它区分「没家庭」和「有个空家庭」，两者渲染完全不同。
+        # 关键契约：没加入家庭时返回的仍是**对象**，靠 joined=false 表达。
+        # 不能返回裸 null —— Retrofit + kotlinx-serialization 吃不下，
+        # 客户端会抛 JsonDecodingException，用户看到「出错了」而不是加入入口。
         status, none_fam = c.get("/api/v1/family")
-        check("没加入家庭时返回 null", status == 200 and none_fam is None,
+        check("没加入家庭时 joined=false",
+              status == 200 and isinstance(none_fam, dict)
+              and none_fam.get("joined") is False,
               f"HTTP {status} {none_fam}")
 
         status, fam = c.post("/api/v1/family", json_body={"name": "冒烟之家"})
@@ -501,7 +504,9 @@ def main() -> int:
                   status == 200 and isinstance(left, dict) and left.get("dissolved") is True,
                   str(left))
             status, gone = c.get("/api/v1/family")
-            check("解散后查不到家庭", status == 200 and gone is None, str(gone))
+            check("解散后 joined 变回 false",
+                  status == 200 and isinstance(gone, dict) and gone.get("joined") is False,
+                  str(gone))
 
     # ---------- 9. 数据隔离 ----------
     section("9", "数据隔离（别人的数据你看不到）")

@@ -949,8 +949,11 @@ def main() -> int:
 
         # 没加入家庭时必须是 null，不是空对象 —— 前端要分得开「没家庭」和「空家庭」
         r = client.get("/api/v1/family", headers=owner_h)
-        check("没加入家庭时返回 null",
-              r.status_code == 200 and r.json() is None, r.text[:200])
+        # 后端永远返回对象，用 joined 当开关。
+        # 不用裸 null 是因为 Retrofit + kotlinx-serialization 吃不下
+        # （序列化器是非空的），客户端会抛 JsonDecodingException。
+        check("没加入家庭时 joined=false",
+              r.status_code == 200 and r.json().get("joined") is False, r.text[:200])
 
         r = client.post("/api/v1/family", headers=owner_h, json={"name": "测试之家"})
         check("创建家庭", r.status_code == 201, r.text[:300])
@@ -1083,7 +1086,7 @@ def main() -> int:
         check("家庭主退出会解散家庭",
               r.status_code == 200 and r.json().get("dissolved") is True, r.text[:200])
         r = client.get("/api/v1/family", headers=owner_h)
-        check("解散后确实没有家庭了", r.json() is None, r.text[:200])
+        check("解散后 joined 变回 false", r.json().get("joined") is False, r.text[:200])
 
         print("\n=== 18. 清理 ===")
         r = client.delete("/api/v1/inventory", headers=headers)
