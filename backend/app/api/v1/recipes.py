@@ -21,6 +21,7 @@ from app.schemas.recipe import (
     RecipeIngredientOut,
     RecipeOut,
 )
+from app.services.family_service import can_write, visible_user_ids
 from app.services.food_image_service import resolve_image_url
 from app.services.recipe_service import (
     build_cook_plan,
@@ -32,7 +33,16 @@ router = APIRouter(prefix="/recipes", tags=["AI 菜谱"])
 
 
 def _load_inventory(db: Session, user_id: int) -> list[FoodInventory]:
-    inventory = db.query(FoodInventory).filter(FoodInventory.user_id == user_id).all()
+    """取「这个用户能看到的库存」—— 也就是全家的冰箱。
+
+    生成菜谱、算缺料、做菜扣减都基于它。如果这里只看自己那份，
+    就会出现「冰箱页显示有鸡蛋、菜谱却说缺鸡蛋」。
+    """
+    inventory = (
+        db.query(FoodInventory)
+        .filter(FoodInventory.user_id.in_(visible_user_ids(db, user_id)))
+        .all()
+    )
     today = date.today()
     for it in inventory:
         it.refresh_freshness(today)
@@ -118,9 +128,15 @@ def _persist_or_update(db: Session, user_id: int, recipe: RecipeOut) -> Recipe:
     去重键用 name 而不是「食材组合」：同一道菜重做时用量会变，
     但用户心里的「番茄鸡蛋豆腐」始终是一道菜。
     """
+    # 查重范围是**全家可见的菜谱**，不是只有自己生成的。
+    # 否则妈妈生成过「番茄鸡蛋豆腐」、我再生成一次，列表里就会出现两张一样的卡片 ——
+    # 那正是之前修过的「同一道菜重复出现」，只不过换成了跨账号的版本。
     existing = (
         db.query(Recipe)
-        .filter(Recipe.user_id == user_id, Recipe.name == recipe.name)
+        .filter(
+            Recipe.user_id.in_(visible_user_ids(db, user_id)),
+            Recipe.name == recipe.name,
+        )
         .order_by(Recipe.id.desc())
         .first()
     )
@@ -144,16 +160,31 @@ def _ingredients_of(row: Recipe) -> list[RecipeIngredientOut]:
     ]
 
 
-def _load_owned_recipe(db: Session, user_id: int, recipe_id: int) -> Recipe:
-    """取自己的菜谱，取不到就 404。做菜相关的接口都要先过这一关。"""
+def _load_visible_recipe(db: Session, user_id: int, recipe_id: int) -> Recipe:
+    """取一道**自己或家人**的菜谱，取不到就 404。
+
+    菜谱在家庭里是共享的：妈妈生成的菜，我也要能打开、能照着做。
+    """
     row = (
         db.query(Recipe)
-        .filter(Recipe.id == recipe_id, Recipe.user_id == user_id)
+        .filter(
+            Recipe.id == recipe_id,
+            Recipe.user_id.in_(visible_user_ids(db, user_id)),
+        )
         .one_or_none()
     )
     if row is None:
         raise HTTPException(status_code=404, detail="菜谱不存在")
     return row
+
+
+def _guard_write(db: Session, user_id: int) -> None:
+    """只读成员不能动菜谱。"""
+    if not can_write(db, user_id):
+        raise HTTPException(
+            status_code=403,
+            detail="你在家庭里的身份是「只读」，不能修改菜谱。需要的话让家庭主调整你的身份。",
+        )
 
 
 def _row_to_out(row: Recipe) -> RecipeOut:
@@ -203,6 +234,9 @@ def generate(payload: RecipeGenerateRequest, user: CurrentUser, db: DbSession):
     )
 
     if payload.save:
+        # 落库 = 写共享数据，只读成员不行。
+        # 放在 if 里面而不是函数开头：save=False 的纯预览不该被拦。
+        _guard_write(db, user.id)
         for r in recipes:
             # 走 upsert：同名菜谱只保留一行，反复生成不会把列表撑爆
             row = _persist_or_update(db, user.id, r)
@@ -234,15 +268,18 @@ def list_recipes(
     # 按菜名只取最新的一条。修复前反复点「生成新菜谱」攒下的重复行
     # 可能还留在库里（见 _persist_or_update 的说明），这里兜一层，
     # 保证界面上永远不会出现重复卡片。
+    # 范围是全家的菜谱；按菜名分组去重也是跨账号的 ——
+    # 妈妈和我各生成过一次同一道菜，列表里也只该出现一张卡片。
+    visible = visible_user_ids(db, user.id)
     latest_ids = (
         db.query(func.max(Recipe.id))
-        .filter(Recipe.user_id == user.id)
+        .filter(Recipe.user_id.in_(visible))
         .group_by(Recipe.name)
         .scalar_subquery()
     )
     rows = (
         db.query(Recipe)
-        .filter(Recipe.user_id == user.id, Recipe.id.in_(latest_ids))
+        .filter(Recipe.user_id.in_(visible), Recipe.id.in_(latest_ids))
         .order_by(Recipe.created_at.desc())
         .limit(limit)
         .all()
@@ -256,13 +293,7 @@ def list_recipes(
 
 @router.get("/{recipe_id}", response_model=RecipeOut, summary="菜谱详情")
 def get_recipe(recipe_id: int, user: CurrentUser, db: DbSession) -> RecipeOut:
-    row = (
-        db.query(Recipe)
-        .filter(Recipe.id == recipe_id, Recipe.user_id == user.id)
-        .one_or_none()
-    )
-    if row is None:
-        raise HTTPException(status_code=404, detail="菜谱不存在")
+    row = _load_visible_recipe(db, user.id, recipe_id)
 
     # 详情页要用当前库存重算缺料，避免用户已经买回来了还显示缺
     inventory = _load_inventory(db, user.id)
@@ -282,7 +313,7 @@ def get_cook_plan(recipe_id: int, user: CurrentUser, db: DbSession) -> CookPlan:
     不能点一下按钮就闷头扣，得先让用户看见「会用掉什么、各多少」，
     能改数字，再确认。取消就什么都不动。
     """
-    row = _load_owned_recipe(db, user.id, recipe_id)
+    row = _load_visible_recipe(db, user.id, recipe_id)
     inventory = _load_inventory(db, user.id)
     return build_cook_plan(
         recipe_id=row.id,
@@ -306,7 +337,7 @@ def cook_recipe(
     传空列表 `[]` 是有意义的 —— 表示「我做了这道菜，但不想改库存」，
     这时候只记行为、不动库存。
     """
-    row = _load_owned_recipe(db, user.id, recipe_id)
+    row = _load_visible_recipe(db, user.id, recipe_id)
     inventory = _load_inventory(db, user.id)
     plan = build_cook_plan(
         recipe_id=row.id,
@@ -407,26 +438,19 @@ def cook_recipe(
 
 @router.delete("/{recipe_id}", status_code=status.HTTP_204_NO_CONTENT, summary="删除菜谱")
 def delete_recipe(recipe_id: int, user: CurrentUser, db: DbSession) -> None:
-    row = (
-        db.query(Recipe)
-        .filter(Recipe.id == recipe_id, Recipe.user_id == user.id)
-        .one_or_none()
-    )
-    if row is None:
-        raise HTTPException(status_code=404, detail="菜谱不存在")
+    """删一道菜谱。**家人生成的也能删** —— 菜谱列表是全家共享的，
+    看得见却删不掉会让人以为按钮坏了。只读成员除外。"""
+    _guard_write(db, user.id)
+    row = _load_visible_recipe(db, user.id, recipe_id)
     db.delete(row)
     db.commit()
 
 
 @router.post("/feedback", summary="上报用户行为（收藏/做过/跳过/评分），用于修正画像")
 def submit_feedback(payload: MealActionRequest, user: CurrentUser, db: DbSession) -> dict:
-    row = (
-        db.query(Recipe)
-        .filter(Recipe.id == payload.recipe_id, Recipe.user_id == user.id)
-        .one_or_none()
-    )
-    if row is None:
-        raise HTTPException(status_code=404, detail="菜谱不存在")
+    # 家人生成的菜也要能反馈 —— 收藏 / 做过 / 跳过记的是**我自己的**口味，
+    # 属于个人数据，所以只读成员也能用（不拦 _guard_write）。
+    row = _load_visible_recipe(db, user.id, payload.recipe_id)
 
     db.add(
         MealHistory(

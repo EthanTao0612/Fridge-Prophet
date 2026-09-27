@@ -1,7 +1,16 @@
 """用户、用户画像、健康偏好、家庭成员。"""
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import (
+    JSON,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
@@ -33,6 +42,10 @@ class User(Base):
         back_populates="user", cascade="all, delete-orphan"
     )
     privacy: Mapped["PrivacySetting"] = relationship(
+        back_populates="user", uselist=False, cascade="all, delete-orphan"
+    )
+    # 一个人最多在一个家庭里，所以是 uselist=False
+    membership: Mapped["FamilyMembership | None"] = relationship(
         back_populates="user", uselist=False, cascade="all, delete-orphan"
     )
 
@@ -157,3 +170,76 @@ class FamilyMember(Base):
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     user: Mapped[User] = relationship(back_populates="family_members")
+
+
+# ---------------------------------------------------------------
+#  家庭组：把「家人」从一份忌口档案升级成真正关联的账号
+# ---------------------------------------------------------------
+
+FAMILY_ROLES = ("owner", "member", "viewer")
+
+
+class Family(Base):
+    """一个家庭组。
+
+    存在的意义：让「一起管理冰箱」变成真的 —— 家人各用自己的账号登录，
+    凭邀请码加入同一个家庭，之后冰箱 / 菜谱 / 采购清单互相可见。
+
+    ⚠️ 和 `FamilyMember` 的区别，别搞混：
+
+      - `FamilyMember` 是一份**忌口档案**（「爷爷不吃辣」）。
+        对方不需要注册，只用来在生成菜谱时避开忌口。
+      - `Family` + `FamilyMembership` 是**账号之间的关联**，
+        共享的是库存、菜谱这些实际数据。
+
+    两者并存、各管一摊：爷爷奶奶没账号就记成 FamilyMember；
+    爸妈有账号就邀请进 Family。不要试图把前者改成后者 ——
+    那会让「没有账号的家人」无处安放。
+    """
+
+    __tablename__ = "families"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), default="我的家")
+    # 邀请码：家人拿它加入。故意避开 0/O、1/I 这类容易看错的字符，
+    # 因为这东西多半是当面念给对方、或截图发过去的。
+    invite_code: Mapped[str] = mapped_column(String(16), unique=True, index=True)
+    # 拿这个码加入的人默认是什么身份。
+    # 需求里「可以选择被邀请人以什么身份加入」就落在这里 ——
+    # 家庭主生成邀请码时顺便定好，而不是等对方进来再一个个调。
+    invite_role: Mapped[str] = mapped_column(String(16), default="member")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+    memberships: Mapped[list["FamilyMembership"]] = relationship(
+        back_populates="family", cascade="all, delete-orphan"
+    )
+
+
+class FamilyMembership(Base):
+    """谁在哪个家庭里、是什么身份。
+
+    **一个用户只能属于一个家庭** —— `user_id` 上了唯一约束。
+    允许多家庭会让「冰箱页显示的到底是哪个家的」变成一个需要解释的问题，
+    而用户心里其实只有一个「我家」。要换家庭就先退出。
+
+    身份（role）：
+      - `owner`  家庭主：管成员、换邀请码、解散家庭
+      - `member` 成员：能看能改
+      - `viewer` 只读：能看，不能改
+    """
+
+    __tablename__ = "family_memberships"
+    __table_args__ = (UniqueConstraint("user_id", name="uq_family_membership_user"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    family_id: Mapped[int] = mapped_column(
+        ForeignKey("families.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    role: Mapped[str] = mapped_column(String(16), default="member")
+    joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+    family: Mapped[Family] = relationship(back_populates="memberships")
+    user: Mapped[User] = relationship(back_populates="membership")

@@ -12,9 +12,28 @@ from app.schemas.inventory import (
     InventoryUpdate,
     ScanConfirmRequest,
 )
+from app.services.family_service import can_write, visible_user_ids
 from app.services.ingredient_image_service import resolve_ingredient_image
 
 router = APIRouter(prefix="/inventory", tags=["冰箱库存"])
+
+
+def _visible(db, user_id: int) -> list[int]:
+    """这个用户能看到哪些人的库存。
+
+    冰箱是**共享实体**：家人各自用自己账号加的东西，都算「冰箱里的」。
+    所以读操作一律走这里，写操作仍然记在添加者名下。
+    """
+    return visible_user_ids(db, user_id)
+
+
+def _guard_write(db, user_id: int) -> None:
+    """只读成员不能改冰箱。"""
+    if not can_write(db, user_id):
+        raise HTTPException(
+            status_code=403,
+            detail="你在家庭里的身份是「只读」，不能修改冰箱。需要的话让家庭主调整你的身份。",
+        )
 
 DEFAULT_SHELF_LIFE: dict[str, int] = {
     "鸡蛋": 30, "牛奶": 7, "豆腐": 3, "西红柿": 7, "青椒": 7, "西兰花": 5,
@@ -80,10 +99,21 @@ def _to_out(item: FoodInventory, today: date) -> InventoryOut:
     return out
 
 
-def _owned_or_404(db: DbSession, user_id: int, item_id: int) -> FoodInventory:
+def _visible_or_404(db: DbSession, user_id: int, item_id: int) -> FoodInventory:
+    """按 id 取一件食材，取不到（或不在可见范围）就 404。
+
+    范围是**家庭可见**而不是「只有自己加的」：冰箱是共享实体，
+    家人买回来的东西也要能改能删 —— 就像家里那台真冰箱，
+    谁都能把喝完的牛奶那行划掉。
+
+    只读成员不能改，那条由调用方的 `_guard_write` 把关。
+    """
     item = (
         db.query(FoodInventory)
-        .filter(FoodInventory.id == item_id, FoodInventory.user_id == user_id)
+        .filter(
+            FoodInventory.id == item_id,
+            FoodInventory.user_id.in_(visible_user_ids(db, user_id)),
+        )
         .one_or_none()
     )
     if item is None:
@@ -99,7 +129,7 @@ def list_inventory(
     category: str | None = None,
     keyword: str | None = None,
 ) -> list[InventoryOut]:
-    q = db.query(FoodInventory).filter(FoodInventory.user_id == user.id)
+    q = db.query(FoodInventory).filter(FoodInventory.user_id.in_(_visible(db, user.id)))
     if storage_location:
         q = q.filter(FoodInventory.storage_location == storage_location)
     if category:
@@ -126,7 +156,7 @@ def list_expiring(
     items = (
         db.query(FoodInventory)
         .filter(
-            FoodInventory.user_id == user.id,
+            FoodInventory.user_id.in_(_visible(db, user.id)),
             FoodInventory.expiry_date.isnot(None),
             FoodInventory.expiry_date <= deadline,
         )
@@ -154,7 +184,7 @@ def list_expiring(
 @router.get("/stats", summary="库存概览（首页顶部数字）")
 def inventory_stats(user: CurrentUser, db: DbSession) -> dict:
     today = date.today()
-    items = db.query(FoodInventory).filter(FoodInventory.user_id == user.id).all()
+    items = db.query(FoodInventory).filter(FoodInventory.user_id.in_(_visible(db, user.id))).all()
     for it in items:
         it.refresh_freshness(today)
     db.commit()
@@ -182,6 +212,7 @@ def inventory_stats(user: CurrentUser, db: DbSession) -> dict:
 @router.post("", response_model=InventoryOut, status_code=status.HTTP_201_CREATED,
              summary="手动添加食材")
 def create_item(payload: InventoryCreate, user: CurrentUser, db: DbSession) -> InventoryOut:
+    _guard_write(db, user.id)
     today = date.today()
     data = payload.model_dump()
     # shelf_life_days 只是「用来推算过期日期」的输入提示，不是数据库字段
@@ -209,7 +240,8 @@ def create_item(payload: InventoryCreate, user: CurrentUser, db: DbSession) -> I
 def update_item(
     item_id: int, payload: InventoryUpdate, user: CurrentUser, db: DbSession
 ) -> InventoryOut:
-    item = _owned_or_404(db, user.id, item_id)
+    _guard_write(db, user.id)
+    item = _visible_or_404(db, user.id, item_id)
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(item, field, value)
     if payload.freshness is None:
@@ -221,7 +253,8 @@ def update_item(
 
 @router.delete("/{item_id}", status_code=status.HTTP_204_NO_CONTENT, summary="删除食材")
 def delete_item(item_id: int, user: CurrentUser, db: DbSession) -> None:
-    item = _owned_or_404(db, user.id, item_id)
+    _guard_write(db, user.id)
+    item = _visible_or_404(db, user.id, item_id)
     db.delete(item)
     db.commit()
 
@@ -232,6 +265,7 @@ def confirm_scan(
     payload: ScanConfirmRequest, user: CurrentUser, db: DbSession
 ) -> list[InventoryOut]:
     """策划书强调的「用户确认后才写入库存」这一步就在这里落地。"""
+    _guard_write(db, user.id)
     if not payload.foods:
         raise HTTPException(status_code=400, detail="没有可加入的食材")
 
@@ -247,14 +281,17 @@ def confirm_scan(
             shelf_life_days=food.shelf_life_days,
             today=today,
         )
+        # 同名合并要跨家庭找，不是只找自己加的那条 ——
+        # 共享冰箱是同一个物理空间：妈妈已经放过鸡蛋，我再扫一次鸡蛋，
+        # 应该是「那盒鸡蛋多了一板」，而不是冰箱里冒出两行鸡蛋。
         existing = (
             db.query(FoodInventory)
             .filter(
-                FoodInventory.user_id == user.id,
+                FoodInventory.user_id.in_(_visible(db, user.id)),
                 FoodInventory.food_name == food.name,
                 FoodInventory.storage_location == location,
             )
-            .one_or_none()
+            .first()
         )
 
         if existing:
@@ -290,5 +327,16 @@ def confirm_scan(
 
 @router.delete("", status_code=status.HTTP_204_NO_CONTENT, summary="清空冰箱")
 def clear_inventory(user: CurrentUser, db: DbSession) -> None:
-    db.query(FoodInventory).filter(FoodInventory.user_id == user.id).delete()
+    """清空**冰箱里看得见的全部**，包括家人加的。
+
+    刻意不是「只清自己的」：按钮写着「清空冰箱」，如果点完还剩家人的食材，
+    用户会以为功能坏了。范围要和用户在列表里看到的完全一致 ——
+    看得见什么，清掉的就是什么。
+
+    只读成员不能清。
+    """
+    _guard_write(db, user.id)
+    db.query(FoodInventory).filter(
+        FoodInventory.user_id.in_(_visible(db, user.id))
+    ).delete(synchronize_session=False)
     db.commit()

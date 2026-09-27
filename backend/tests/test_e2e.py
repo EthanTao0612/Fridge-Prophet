@@ -933,11 +933,165 @@ def main() -> int:
         if image_post_id:
             client.delete(f"/api/v1/social/posts/{image_post_id}", headers=headers)
 
+        print("\n=== 17b. 家庭组（账号关联与数据共享）===")
+        # 用两个独立账号验证共享。共享是这次改动里最容易出错的地方 ——
+        # 每个查询都要走 family_service.visible_user_ids()，漏一处就会
+        # 出现「冰箱里看得到、菜谱里看不到」这种自相矛盾。
+        r = client.post("/api/v1/auth/register", json={
+            "email": "fam_owner@example.com", "password": "fam123456", "nickname": "家长"})
+        check("家庭主账号注册", r.status_code == 201, r.text[:200])
+        owner_h = {"Authorization": f"Bearer {r.json()['access_token']}"}
+
+        r = client.post("/api/v1/auth/register", json={
+            "email": "fam_member@example.com", "password": "fam123456", "nickname": "家人"})
+        check("成员账号注册", r.status_code == 201, r.text[:200])
+        member_h = {"Authorization": f"Bearer {r.json()['access_token']}"}
+
+        # 没加入家庭时必须是 null，不是空对象 —— 前端要分得开「没家庭」和「空家庭」
+        r = client.get("/api/v1/family", headers=owner_h)
+        check("没加入家庭时返回 null",
+              r.status_code == 200 and r.json() is None, r.text[:200])
+
+        r = client.post("/api/v1/family", headers=owner_h, json={"name": "测试之家"})
+        check("创建家庭", r.status_code == 201, r.text[:300])
+        fam = r.json() if r.status_code == 201 else {}
+        code = fam.get("invite_code")
+        check("家庭主拿到 6 位邀请码",
+              bool(code) and len(code) == 6, str(code))
+        check("自己是家庭主", fam.get("my_role") == "owner", str(fam.get("my_role")))
+        check("家里目前只有自己", fam.get("member_count") == 1, str(fam.get("member_count")))
+
+        r = client.post("/api/v1/family", headers=owner_h, json={})
+        check("已经在家庭里就不能再建一个", r.status_code == 400, r.text[:200])
+
+        r = client.post("/api/v1/family/join", headers=member_h, json={"code": "ZZZZZZ"})
+        check("无效邀请码被拒绝", r.status_code == 404, r.text[:200])
+
+        # 邀请码多半是当面念或截图发的，大小写和空格不该成为障碍
+        r = client.post("/api/v1/family/join", headers=member_h,
+                        json={"code": f"  {code.lower()}  "})
+        check("邀请码容忍大小写和前后空格", r.status_code == 200, r.text[:300])
+
+        r = client.get("/api/v1/family", headers=owner_h)
+        check("成员加入后人数变 2", r.json().get("member_count") == 2, r.text[:200])
+
+        # ---------- 数据共享（本次改动的核心）----------
+        client.post("/api/v1/inventory", headers=owner_h,
+                    json={"food_name": "共享牛奶", "quantity": 2, "unit": "盒"})
+        names = [x["food_name"]
+                 for x in (client.get("/api/v1/inventory", headers=member_h).json() or [])]
+        check("成员能看到家庭主加的食材", "共享牛奶" in names, str(names))
+
+        client.post("/api/v1/inventory", headers=member_h,
+                    json={"food_name": "成员买的鸡蛋", "quantity": 6, "unit": "个"})
+        names = [x["food_name"]
+                 for x in (client.get("/api/v1/inventory", headers=owner_h).json() or [])]
+        check("家庭主能看到成员加的食材", "成员买的鸡蛋" in names, str(names))
+
+        # 菜谱同样共享
+        client.post("/api/v1/recipes/generate", headers=owner_h,
+                    json={"count": 3, "save": True})
+        owner_recipes = client.get("/api/v1/recipes", headers=owner_h).json() or []
+        member_recipes = client.get("/api/v1/recipes", headers=member_h).json() or []
+        check("成员能看到家庭主的菜谱",
+              bool(owner_recipes)
+              and {x["name"] for x in owner_recipes} == {x["name"] for x in member_recipes},
+              f"主 {len(owner_recipes)} 道 / 成员 {len(member_recipes)} 道")
+        if owner_recipes:
+            rid = owner_recipes[0]["id"]
+            r = client.get(f"/api/v1/recipes/{rid}", headers=member_h)
+            check("成员能打开家庭主的菜谱详情", r.status_code == 200, r.text[:200])
+
+        # 个人数据**不**共享 —— 这是当初定下的边界。
+        # 健康偏好没有单独的 GET，它跟着 /users/profile 一起返回。
+        client.put("/api/v1/users/health", headers=owner_h, json={"low_sodium": True})
+        owner_health = (client.get("/api/v1/users/profile", headers=owner_h).json()
+                        or {}).get("health", {})
+        member_health = (client.get("/api/v1/users/profile", headers=member_h).json()
+                         or {}).get("health", {})
+        check("家庭主确实设上了（否则这条测不出东西）",
+              owner_health.get("low_sodium") is True, str(owner_health))
+        check("健康偏好不共享（成员看不到家庭主设的）",
+              member_health.get("low_sodium") is not True, str(member_health))
+
+        # ---------- 只读成员 ----------
+        r = client.post("/api/v1/family/invite-code", headers=owner_h,
+                        json={"role": "viewer"})
+        check("换邀请码并指定「只读」身份", r.status_code == 200, r.text[:300])
+        viewer_code = r.json().get("invite_code")
+        check("换码后旧码失效",
+              viewer_code != code, f"新 {viewer_code} / 旧 {code}")
+
+        r = client.post("/api/v1/family/leave", headers=member_h)
+        check("成员退出", r.status_code == 200 and r.json().get("dissolved") is False,
+              r.text[:200])
+
+        r = client.post("/api/v1/family/join", headers=member_h,
+                        json={"code": viewer_code})
+        check("用只读码重新加入", r.status_code == 200, r.text[:300])
+        check("身份确实是只读",
+              r.json().get("my_role") == "viewer", str(r.json().get("my_role")))
+        check("只读成员看不到邀请码",
+              r.json().get("invite_code") is None, str(r.json().get("invite_code")))
+
+        r = client.post("/api/v1/inventory", headers=member_h,
+                        json={"food_name": "只读不该能加", "quantity": 1, "unit": "个"})
+        check("只读成员不能加食材", r.status_code == 403, r.text[:200])
+
+        r = client.get("/api/v1/inventory", headers=member_h)
+        check("但只读成员能看", r.status_code == 200, r.text[:200])
+
+        r = client.post("/api/v1/recipes/generate", headers=member_h,
+                        json={"count": 3, "save": True})
+        check("只读成员不能落库菜谱", r.status_code == 403, r.text[:200])
+
+        # ---------- 家庭主管理成员 ----------
+        fam_member_id = next(
+            (m["user_id"] for m in
+             (client.get("/api/v1/family", headers=owner_h).json() or {}).get("members", [])
+             if not m["is_me"]),
+            None,
+        )
+        check("能拿到成员 id", fam_member_id is not None, str(fam_member_id))
+
+        r = client.patch(f"/api/v1/family/members/{fam_member_id}", headers=owner_h,
+                         json={"role": "member"})
+        check("家庭主能把只读改回成员",
+              r.status_code == 200 and r.json().get("my_role") == "owner", r.text[:200])
+
+        r = client.patch(f"/api/v1/family/members/{fam_member_id}", headers=member_h,
+                         json={"role": "viewer"})
+        check("成员不能改别人身份", r.status_code == 403, r.text[:200])
+
+        r = client.patch(f"/api/v1/family/members/{fam_member_id}", headers=owner_h,
+                         json={"role": "owner"})
+        check("不能把别人设成家庭主（本版本不支持转让）",
+              r.status_code == 422, r.text[:200])
+
+        r = client.delete(f"/api/v1/family/members/{fam_member_id}", headers=owner_h)
+        check("家庭主能移出成员",
+              r.status_code == 200 and r.json().get("member_count") == 1, r.text[:200])
+
+        # 被移出后看不到了 —— 但对方自己的数据还在
+        names = [x["food_name"]
+                 for x in (client.get("/api/v1/inventory", headers=member_h).json() or [])]
+        check("被移出后看不到家庭主的食材", "共享牛奶" not in names, str(names))
+        check("被移出后自己的食材还在", "成员买的鸡蛋" in names, str(names))
+
+        # ---------- 家庭主退出 = 解散 ----------
+        r = client.post("/api/v1/family/leave", headers=owner_h)
+        check("家庭主退出会解散家庭",
+              r.status_code == 200 and r.json().get("dissolved") is True, r.text[:200])
+        r = client.get("/api/v1/family", headers=owner_h)
+        check("解散后确实没有家庭了", r.json() is None, r.text[:200])
+
         print("\n=== 18. 清理 ===")
         r = client.delete("/api/v1/inventory", headers=headers)
         check("清空冰箱", r.status_code == 204, r.text[:200])
         r = client.get("/api/v1/inventory", headers=headers)
         check("清空后为空", r.status_code == 200 and len(r.json()) == 0)
+        # 注意：这里用的是第 2 节那个「忌口档案」的 id，
+        # 不是 17b 节的家庭组成员 id。两者名字像但完全是两回事。
         if member_id:
             r = client.delete(f"/api/v1/users/family/{member_id}", headers=headers)
             check("删除家庭成员", r.status_code == 204, r.text[:200])

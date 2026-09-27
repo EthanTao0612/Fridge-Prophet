@@ -459,6 +459,50 @@ def main() -> int:
     status, _ = c.get("/api/v1/recipes/999999/cook-plan")
     check("不存在的菜谱 → 404", status == 404, f"HTTP {status}")
 
+    # ---------- 8c. 家庭组 ----------
+    section("8c", "家庭组（邀请码加入 + 数据共享）")
+
+    # 另起一个客户端当「家人」，免得把主测试账号的 token 弄乱
+    mate = Client(base)
+    status, mate_data = mate.post("/api/v1/auth/register", json_body={
+        "email": f"smokefam_{uuid.uuid4().hex[:10]}@example.com",
+        "password": "SmokeTest123", "nickname": "家人"})
+    if check("家人账号注册成功", status in (200, 201), f"HTTP {status} {mate_data}"):
+        mate.token = mate_data.get("access_token")
+
+        # 关键契约：没加入家庭时返回的是 **null**，不是 {}。
+        # 前端要靠它区分「没家庭」和「有个空家庭」，两者渲染完全不同。
+        status, none_fam = c.get("/api/v1/family")
+        check("没加入家庭时返回 null", status == 200 and none_fam is None,
+              f"HTTP {status} {none_fam}")
+
+        status, fam = c.post("/api/v1/family", json_body={"name": "冒烟之家"})
+        if check("创建家庭成功", status in (200, 201), f"HTTP {status} {fam}"):
+            code = fam.get("invite_code")
+            check("拿到 6 位邀请码", bool(code) and len(code) == 6, str(code))
+
+            status, joined = mate.post("/api/v1/family/join", json_body={"code": code})
+            check("家人用邀请码加入成功", status == 200, f"HTTP {status} {joined}")
+            check("家人身份是成员",
+                  isinstance(joined, dict) and joined.get("my_role") == "member",
+                  str(joined))
+
+            # 数据共享 —— 这是这个功能的全部意义所在
+            c.post("/api/v1/inventory", json_body={
+                "food_name": "共享验证牛奶", "quantity": 1, "unit": "盒"})
+            status, mate_inv = mate.get("/api/v1/inventory")
+            names = {x.get("food_name") for x in (mate_inv or [])}
+            check("家人能看到我加的食材", "共享验证牛奶" in names, str(names)[:200])
+
+            # 收尾：退出 + 解散，别在库里留垃圾
+            mate.post("/api/v1/family/leave")
+            status, left = c.post("/api/v1/family/leave")
+            check("家庭主退出 = 解散",
+                  status == 200 and isinstance(left, dict) and left.get("dissolved") is True,
+                  str(left))
+            status, gone = c.get("/api/v1/family")
+            check("解散后查不到家庭", status == 200 and gone is None, str(gone))
+
     # ---------- 9. 数据隔离 ----------
     section("9", "数据隔离（别人的数据你看不到）")
     other = Client(base)

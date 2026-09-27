@@ -4,7 +4,9 @@ from app.models.recipe import MealHistory, Recipe, RecipeFeedback, RecipeIngredi
 from app.models.shopping import ShoppingItem, ShoppingList
 from app.models.social import Follow, Post, PostComment, PostLike
 from app.models.user import (
+    Family,
     FamilyMember,
+    FamilyMembership,
     HealthPreference,
     PrivacySetting,
     User,
@@ -17,6 +19,8 @@ __all__ = [
     "HealthPreference",
     "PrivacySetting",
     "FamilyMember",
+    "Family",
+    "FamilyMembership",
     "FoodInventory",
     "Recipe",
     "RecipeIngredient",

@@ -15,11 +15,25 @@ from app.schemas.shopping import (
     ShoppingItemUpdate,
     ShoppingListOut,
 )
+from app.services.family_service import can_write, visible_user_ids
 from app.services.shopping_service import compute_missing, merge_into
 
 router = APIRouter(prefix="/shopping", tags=["智能采购"])
 
 DEFAULT_SHELF_LIFE_DAYS = 5
+
+
+def _visible(db, user_id: int) -> list[int]:
+    """能看到的采购清单范围 = 全家。买菜的可能不是我。"""
+    return visible_user_ids(db, user_id)
+
+
+def _guard_write(db, user_id: int) -> None:
+    if not can_write(db, user_id):
+        raise HTTPException(
+            status_code=403,
+            detail="你在家庭里的身份是「只读」，不能修改采购清单。需要的话让家庭主调整你的身份。",
+        )
 
 
 def _row_to_out(row: ShoppingList) -> ShoppingListOut:
@@ -70,17 +84,20 @@ def _recipe_to_out(row: Recipe) -> RecipeOut:
 def build_shopping_list(
     payload: ShoppingBuildRequest, user: CurrentUser, db: DbSession
 ) -> ShoppingListOut:
+    _guard_write(db, user.id)
+    visible = _visible(db, user.id)
+
     if payload.recipe_ids:
         rows = (
             db.query(Recipe)
-            .filter(Recipe.id.in_(payload.recipe_ids), Recipe.user_id == user.id)
+            .filter(Recipe.id.in_(payload.recipe_ids), Recipe.user_id.in_(visible))
             .all()
         )
     else:
         # 不指定就用最近生成的 days 道菜，对应策划书第十节的「批量采购」
         rows = (
             db.query(Recipe)
-            .filter(Recipe.user_id == user.id)
+            .filter(Recipe.user_id.in_(visible))
             .order_by(Recipe.created_at.desc())
             .limit(payload.days * 3)
             .all()
@@ -90,7 +107,10 @@ def build_shopping_list(
         raise HTTPException(status_code=400, detail="还没有可用的菜谱，请先生成菜谱")
 
     recipes = [_recipe_to_out(r) for r in rows]
-    inventory = db.query(FoodInventory).filter(FoodInventory.user_id == user.id).all()
+    # 库存也要算全家的 —— 用自己那份会把家人已经买的东西又列一遍
+    inventory = (
+        db.query(FoodInventory).filter(FoodInventory.user_id.in_(visible)).all()
+    )
     missing = merge_into(compute_missing(recipes, inventory))
 
     if not missing:
@@ -126,7 +146,7 @@ def list_shopping(
     db: DbSession,
     status_filter: str | None = Query(default=None, alias="status"),
 ) -> list[ShoppingListOut]:
-    q = db.query(ShoppingList).filter(ShoppingList.user_id == user.id)
+    q = db.query(ShoppingList).filter(ShoppingList.user_id.in_(_visible(db, user.id)))
     if status_filter:
         q = q.filter(ShoppingList.status == status_filter)
     rows = q.order_by(ShoppingList.created_at.desc()).all()
@@ -137,10 +157,14 @@ def list_shopping(
 def update_item(
     item_id: int, payload: ShoppingItemUpdate, user: CurrentUser, db: DbSession
 ) -> ShoppingItemOut:
+    _guard_write(db, user.id)
     item = (
         db.query(ShoppingItem)
         .join(ShoppingList, ShoppingList.id == ShoppingItem.shopping_list_id)
-        .filter(ShoppingItem.id == item_id, ShoppingList.user_id == user.id)
+        .filter(
+            ShoppingItem.id == item_id,
+            ShoppingList.user_id.in_(_visible(db, user.id)),
+        )
         .one_or_none()
     )
     if item is None:
@@ -155,10 +179,14 @@ def update_item(
 
 @router.delete("/items/{item_id}", status_code=status.HTTP_204_NO_CONTENT, summary="删除采购项")
 def delete_item(item_id: int, user: CurrentUser, db: DbSession) -> None:
+    _guard_write(db, user.id)
     item = (
         db.query(ShoppingItem)
         .join(ShoppingList, ShoppingList.id == ShoppingItem.shopping_list_id)
-        .filter(ShoppingItem.id == item_id, ShoppingList.user_id == user.id)
+        .filter(
+            ShoppingItem.id == item_id,
+            ShoppingList.user_id.in_(_visible(db, user.id)),
+        )
         .one_or_none()
     )
     if item is None:
@@ -172,9 +200,13 @@ def delete_item(item_id: int, user: CurrentUser, db: DbSession) -> None:
 def apply_to_inventory(
     list_id: int, payload: ShoppingApplyRequest, user: CurrentUser, db: DbSession
 ) -> ShoppingListOut:
+    _guard_write(db, user.id)
     row = (
         db.query(ShoppingList)
-        .filter(ShoppingList.id == list_id, ShoppingList.user_id == user.id)
+        .filter(
+            ShoppingList.id == list_id,
+            ShoppingList.user_id.in_(_visible(db, user.id)),
+        )
         .one_or_none()
     )
     if row is None:
@@ -188,14 +220,17 @@ def apply_to_inventory(
     for item in targets:
         if item.applied_to_inventory:
             continue
+        # 同名合并跨家庭找 —— 共享冰箱是同一个物理空间，
+        # 家人已经买过牛奶，我再买一盒应该是「多了一盒」，
+        # 而不是冰箱里出现两行牛奶。
         existing = (
             db.query(FoodInventory)
             .filter(
-                FoodInventory.user_id == user.id,
+                FoodInventory.user_id.in_(_visible(db, user.id)),
                 FoodInventory.food_name == item.food_name,
                 FoodInventory.storage_location == "冷藏",
             )
-            .one_or_none()
+            .first()
         )
         if existing:
             existing.quantity += item.quantity
@@ -228,9 +263,13 @@ def apply_to_inventory(
 
 @router.delete("/{list_id}", status_code=status.HTTP_204_NO_CONTENT, summary="删除采购清单")
 def delete_list(list_id: int, user: CurrentUser, db: DbSession) -> None:
+    _guard_write(db, user.id)
     row = (
         db.query(ShoppingList)
-        .filter(ShoppingList.id == list_id, ShoppingList.user_id == user.id)
+        .filter(
+            ShoppingList.id == list_id,
+            ShoppingList.user_id.in_(_visible(db, user.id)),
+        )
         .one_or_none()
     )
     if row is None:
