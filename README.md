@@ -11,10 +11,14 @@
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
-| 阶段一 | FastAPI 后端（数据模型 / 接口 / AI 接入 / 采购算法） | ✅ **已完成，60 项端到端测试全部通过** |
-| 阶段二 | Android 客户端（Kotlin + Compose） | ✅ **已完成，debug / release 均构建通过** |
+| 阶段一 | FastAPI 后端（数据模型 / 接口 / AI 接入 / 采购算法） | ✅ **已完成，251 项端到端测试全部通过** |
+| 阶段二 | Android 客户端（Kotlin + Compose） | ✅ **已完成，真机验收通过** |
 | 阶段三 | 后端部署到公网 | ⏳ 待开始（等云账号） |
-| 阶段四 | 打包签名 APK | 🔄 **签名脚本与 CI 已就绪，待生成密钥** |
+| 阶段四 | 打包签名 APK | 🔄 **签名已用 apksigner 验证，CI 已跑通；待配 Secrets 让 CI 出正式签名包** |
+
+> 目前唯一挡在「可演示」前面的，是 **`DASHSCOPE_API_KEY`**（阿里云百炼）。
+> 没配它后端会走 MOCK 模式 —— 整条链路能跑通，但拍照识别返回的是内置演示数据。
+> 拿到 Key 后填进 `backend/.env` 重启即可，代码不用动。
 
 > **不知道从哪下手？先看 [`docs/00-行动清单.md`](docs/00-行动清单.md)。**
 > 那份文档把全部待办按依赖顺序排好了，并标注了哪一步需要你亲自做。
@@ -73,21 +77,30 @@ Fridge-Prophet/
 │   ├── 01-账号注册.md          ← Supabase / 百炼 / 腾讯云 怎么开
 │   ├── 02-本地运行.md          ← 怎么在本地把后端和 App 都跑起来
 │   ├── 03-部署到公网.md        ← 服务器 + Nginx + systemd + HTTPS
-│   └── 04-打包APK.md           ← 签名密钥 / release 构建 / GitHub Actions
+│   ├── 04-打包APK.md           ← 签名密钥 / release 构建 / GitHub Actions
+│   ├── 05-用接口文档跑通全链路.md
+│   ├── 06-本轮优化说明.md      ← 第一轮反馈修复
+│   └── 07-第二轮反馈修复.md    ← 家庭共享 / 做菜扣库存 / 配色 / 真机验收
 ├── tools/
 │   ├── start-backend.sh       ← 后端启动脚本（.bat 实际调用的就是它）
-│   └── new-keystore.sh        ← 一键生成签名密钥并写好配置
-├── backend/                   ← 后端服务（已完成，60 项测试全过）
+│   ├── new-keystore.sh        ← 一键生成签名密钥并写好配置
+│   ├── import-images.py       ← 批量导入菜谱图 / 食材图
+│   ├── dedupe-recipes.py      ← 清理库里的重复菜谱行
+│   └── verify-recipe-dedupe.py← 打真实库验证去重效果
+├── build-debug.bat            ← 【双击】自动检测局域网 IP 并打出真机能用的包
+├── make-keystore.bat          ← 【双击】生成签名密钥
+├── backend/                   ← 后端服务（已完成，251 项测试全过）
 │   ├── app/
 │   │   ├── main.py
 │   │   ├── core/              config.py（全部配置）· security.py（JWT）
-│   │   ├── db/                引擎与会话
-│   │   ├── models/            ORM：用户 / 库存 / 菜谱 / 采购（11 张表）
+│   │   ├── db/                引擎与会话 · migrate.py（轻量自动补列）
+│   │   ├── models/            ORM：用户 / 家庭 / 库存 / 菜谱 / 采购 / 广场（18 张表）
 │   │   ├── schemas/           Pydantic 出入参
-│   │   ├── services/          AI 调用 · 视觉识别 · 菜谱生成 · 采购计算 · 图片存储
-│   │   └── api/v1/            auth / users / inventory / vision / recipes / shopping
+│   │   ├── services/          AI 调用 · 视觉识别 · 菜谱生成 · 采购计算 · 家庭共享 · 图片存储
+│   │   └── api/v1/            auth / users / family / inventory / vision
+│   │                          recipes / shopping / tips / social
 │   ├── scripts/               check_supabase.py · check_ai.py · smoke_http.py
-│   ├── tests/test_e2e.py      60 项端到端测试
+│   ├── tests/test_e2e.py      251 项端到端测试
 │   ├── requirements.txt
 │   ├── .env.example
 │   └── run.py
@@ -95,17 +108,21 @@ Fridge-Prophet/
     ├── keystore.properties.example  签名配置模板（复制成 keystore.properties 用）
     ├── gradle/libs.versions.toml   版本目录（全部版本已逐一验证存在）
     ├── app/build.gradle.kts        构建配置 · 签名配置 · 后端地址注入
+    ├── app/src/test/java/.../      契约测试（MockWebServer，不需要真机）
+    │   ├── DeleteContractTest.kt   删除接口的 204 空响应体契约
+    │   └── FamilyContractTest.kt   家庭接口的 null 契约（抓出过一个真 bug）
     └── app/src/main/java/com/fridgeprophet/app/
         ├── core/            令牌存储 · 统一错误封装 · 跨页刷新总线
         ├── data/
         │   ├── remote/      DTO · Retrofit 接口 · OkHttp 客户端
-        │   └── repository/  五个仓库，界面只跟它们打交道
+        │   └── repository/  六个仓库，界面只跟它们打交道
         ├── di/              Hilt 模块
         └── ui/
             ├── components/  复用组件（卡片 / 标签 / 空状态）
-            ├── theme/       白绿橙品牌色
-            └── screens/     splash · auth · onboarding · main(5 Tab)
-                             home · fridge · scan · recipes · shopping · profile
+            ├── theme/       白绿橙品牌色 · 卡片与背景的三层灰阶
+            └── screens/     splash · auth · onboarding · main(6 Tab)
+                             home · plaza · fridge · recipes · shopping · profile
+                             scan · family · tips
 ```
 
 ## 四、后端已完成的能力
@@ -130,6 +147,42 @@ Fridge-Prophet/
 
 3. **识别结果不直接入库。** `POST /vision/scan` 只返回候选，
    必须再调 `POST /inventory/confirm` 才写入。这是策划书强调的用户确认机制。
+
+4. **跨用户的数据可见范围只能有一处定义。** 家庭共享靠
+   `services/family_service.py::visible_user_ids()` —— 全项目**唯一**决定
+   「谁的数据算我的」的地方，库存 / 菜谱 / 采购的读查询全部走它。
+   漏改一处就会出现「冰箱里看得到、菜谱里看不到」这种自相矛盾。
+
+5. **单位对不上时不猜。** 做菜扣库存时，库存记「1 盒豆腐」、菜谱要「300 g」，
+   预览里的建议量**留空**让用户自己填。给 0 是错的（用户以为扣了，其实没有），
+   给 300 更错（可能把整盒扣没）。和缺料判断是同一条原则。
+
+**家庭共享**
+
+家人各自用自己的账号登录，凭**邀请码**加入同一个家庭，之后冰箱、菜谱、
+采购清单全家共享；个人画像和健康数据仍然私有。
+
+| 接口 | 作用 |
+|---|---|
+| `GET/POST /family` | 看我的家庭 / 创建家庭 |
+| `POST /family/join` | 用邀请码加入 |
+| `POST /family/invite-code` | 换码（顺便定新成员的身份：成员 / 只读） |
+| `PATCH` `DELETE` `/family/members/{id}` | 调身份 / 移出（只有家庭主能做） |
+| `POST /family/leave` | 退出（**家庭主退出 = 解散家庭**） |
+
+> ⚠️ 和「家人的忌口」（`/users/family`）**不是一回事**，两者并存：
+> 前者是**账号关联**（共享实际数据），后者是**忌口档案**
+> （爷爷奶奶没账号就记忌口，爸妈有账号就邀请进来）。
+
+**做菜扣库存**
+
+浏览菜谱时可以点「我做这道菜了」：先给一份**扣减预览**（会用掉什么、各多少、
+扣完哪样会用光），用户可以改量、可以取消，确认后才真的扣减。
+
+| 接口 | 作用 |
+|---|---|
+| `GET /recipes/{id}/cook-plan` | 只算不扣的预览 |
+| `POST /recipes/{id}/cook` | 按实际用量扣减 |
 
 **无密钥也能完整演示。** 未配置 `DASHSCOPE_API_KEY` 时自动降级为 MOCK 模式，
 返回内置食材与菜谱，整条链路照常跑通。比赛现场网络出问题时这是保命机制。
@@ -264,27 +317,41 @@ AGP 默认拒绝在非 ASCII 路径下构建，已在 `android/gradle.properties
 > ① Supabase 免费版闲置 7 天会暂停项目，演示前最致命 —— `docs/03` 里给了保活 cron，部署完就配。
 > ② Android 从 API 28 起默认禁止明文 HTTP，release 包**必须**走 HTTPS，否则请求全被系统拦掉。
 
-### 阶段四：打包签名 APK —— 🔄 签名与 CI 已就绪
+### 阶段四：打包签名 APK —— 🔄 签名已验证，待配 CI Secrets
 
 ```bash
-# 1. 生成密钥（一次性）
-bash tools/new-keystore.sh
+# 1. 生成密钥（一次性。已经做过就跳过 —— 密钥别重复生成！）
+#    双击项目根目录的 make-keystore.bat
 
 # 2. 打正式包
 cd android
-export JAVA_HOME="G:\Android\jdk-17.0.20.1+1"
+export JAVA_HOME="G:/Android/jdk-17.0.20.1+1"
 "G:/Android/gradle-8.14.5/bin/gradle.bat" assembleRelease \
   -PAPI_BASE_URL=https://你的正式域名/
+
+# 3. 验签名（关键，别跳过）
+"G:/Android/Sdk/build-tools/36.0.0/apksigner.bat" verify --print-certs \
+  app/build/outputs/apk/release/app-release.apk
 ```
 
 已完成的部分：
 
-- ✅ release 构建链路验证通过（含 R8 混淆）
-- ✅ `tools/new-keystore.sh` 一键生成密钥并写好 `keystore.properties`
-- ✅ 后端地址改为**可注入**（`-PAPI_BASE_URL` / 环境变量 / `gradle.properties`），
-  不再硬编码在代码里 —— 换服务器不用改代码，CI 也能注入
-- ✅ GitHub Actions 流水线（`.github/workflows/android.yml`），推代码自动出包
-- ✅ 打 release 包时若未注入地址会打印警告，避免打出连不上后端的包
+- ✅ 密钥已生成（`android/release.jks` + `keystore.properties`，都在 .gitignore 里）
+- ✅ **签名已用 `apksigner` 验证过**：release 包的证书是
+  `CN=FridgeProphet, OU=Mobile, O=FridgeProphet, C=CN`，
+  不是 debug 的 `CN=Android Debug`
+- ✅ release 构建链路验证通过（含 R8 混淆，包体 3.3 MB）
+- ✅ GitHub Actions 流水线跑通，推代码自动出包（`app-debug` + `app-release`）
+- ✅ 后端地址可注入（`-PAPI_BASE_URL` / 环境变量 / `gradle.properties`），
+  换服务器不用改代码
+
+**待做**：把密钥配到 GitHub Secrets，CI 才能出**正式签名**的 release 包。
+现在 CI 上没配 Secrets，走的是 debug 签名 —— 构建照样成功，
+只有查证书才能发现。
+
+> ⚠️ **必须用 `apksigner verify --print-certs` 查证书，不能只看「构建成功」。**
+> 缺 `keystore.properties` 时 Gradle 会**静默退回 debug 签名**：
+> 构建成功、APK 能装，但签名是错的。
 
 完整步骤见 [`docs/04-打包APK.md`](docs/04-打包APK.md)。
 
@@ -305,10 +372,10 @@ bash tools/start-backend.sh
 ```bash
 cd backend
 
-# ① 进程内测试（60 项）：直接调应用，不起网络栈，快
+# ① 进程内测试（251 项）：直接调应用，不起网络栈，快
 .venv/Scripts/python.exe tests/test_e2e.py
 
-# ② HTTP 冒烟测试（37 项）：打真实运行中的服务，走网络栈
+# ② HTTP 冒烟测试（62 项）：打真实运行中的服务，走网络栈
 .venv/Scripts/python.exe scripts/smoke_http.py
 
 # 部署后验线上（只有这个能发现 Nginx 配错、证书没生效）
@@ -331,6 +398,23 @@ export JAVA_HOME="G:\Android\jdk-17.0.20.1+1"
 ls app/build/outputs/apk/debug/app-debug.apk
 ```
 
+**更省事的办法：** 双击项目根目录的 **`build-debug.bat`** ——
+它会自动检测本机局域网 IP、注入、构建，并把 APK 复制到
+`outputs/fridge-prophet-debug-<你的IP>.apk`。
+
+**客户端单元测试（不需要真机）：**
+
+```bash
+cd android
+export JAVA_HOME="G:/Android/jdk-17.0.20.1+1"
+"G:/Android/gradle-8.14.5/bin/gradle.bat" testDebugUnitTest
+```
+
+跑的是 Retrofit 的**接口契约测试**（用 MockWebServer 起一个假后端），
+验证「空响应体 / null 响应体 / 错误码」这些容易被忽略的边界。
+这类问题**只在真机上才暴露**，但契约测试能在本地就抓住 ——
+`FamilyContractTest` 就靠它抓出过一个真 bug（没加入家庭时家庭页报错）。
+
 后端地址支持三种注入方式，优先级从高到低：
 
 | 方式 | 写法 | 适用场景 |
@@ -341,6 +425,11 @@ ls app/build/outputs/apk/debug/app-debug.apk
 
 都不配则用默认值：debug 是 `http://10.0.2.2:8000/`，release 是占位域名 `https://api.example.com/`。
 结尾的 `/` 会自动补上，不用自己加。
+
+> ⚠️ **真机上如果包内地址是 `10.0.2.2`，App 会静默退回登录页** ——
+> 看起来像「账号被清空了」，实际只是连不上后端（`10.0.2.2` 是**模拟器专用**地址）。
+> 排查顺序：① 后端起了吗 ② 手机和电脑在同一 Wi-Fi 吗 ③ 包里的地址是局域网 IP 吗。
+> 用 `build-debug.bat` 构建就不会踩这个坑。
 
 > 为什么不做成硬编码：换服务器地址是部署阶段的日常操作，写死在代码里会导致
 > 地址被提交进 Git、CI 无法注入、别人 clone 下来指向你的服务器。
