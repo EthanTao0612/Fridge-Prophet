@@ -133,8 +133,13 @@ fun ProfileScreen(
             contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            // ⚠️ 每个 item 都必须带 key。
+            // LazyColumn 没有 key 时用「位置」当身份，而下面的提示条是条件渲染的 ——
+            // 用户一编辑，提示条插进来，后面所有 item 的位置全部往后挪一位，
+            // Compose 就认不出「还是原来那个折叠卡」了，rememberSaveable 里的
+            // 展开状态随之被重置。表现出来就是「编辑一下折叠箱自己收回去」。
             // ---------- 账号：头像 + 昵称 + 个性简介 ----------
-            item {
+            item(key = "profile-header") {
                 SectionCard {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         // 点头像直接换图，比「先点编辑再选图」少一步
@@ -209,7 +214,8 @@ fun ProfileScreen(
             // ---------- 提示条 ----------
             (localError ?: state.error ?: state.message)?.let { text ->
                 val isError = localError != null || state.error != null
-                item {
+                // 这条提示是条件渲染的，正是它插进来把后面的 item 挤位移了
+                item(key = "notice") {
                     Surface(
                         color = if (isError) {
                             MaterialTheme.colorScheme.errorContainer
@@ -239,7 +245,7 @@ fun ProfileScreen(
             }
 
             // ---------- 食品安全小贴士入口 ----------
-            item {
+            item(key = "tips-entry") {
                 SectionCard(modifier = Modifier.clickable(onClick = onOpenTips)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -268,7 +274,7 @@ fun ProfileScreen(
             }
 
             // ---------- 口味偏好 ----------
-            item {
+            item(key = "preference") {
                 PreferenceCard(
                     preference = profile.preference,
                     onEdit = { editingPreference = true },
@@ -276,7 +282,7 @@ fun ProfileScreen(
             }
 
             // ---------- 健康偏好 ----------
-            item {
+            item(key = "health") {
                 HealthCard(
                     health = profile.health,
                     busy = state.busy,
@@ -286,7 +292,7 @@ fun ProfileScreen(
             }
 
             // ---------- 家庭成员 ----------
-            item {
+            item(key = "family") {
                 SectionCard {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -364,7 +370,7 @@ fun ProfileScreen(
             // ---------- 在广场公开什么 ----------
             // 放在「家庭成员」之后：它是关于「别人能看见我什么」的，
             // 紧跟在「我有什么」的信息之后，读起来是自然的一句话延续。
-            item {
+            item(key = "privacy") {
                 PrivacyCard(
                     privacy = profile.privacy,
                     busy = state.busy,
@@ -375,7 +381,7 @@ fun ProfileScreen(
             // ---------- 口味洞察 ----------
             state.insights?.let { insights ->
                 if (insights.totalInteractions > 0) {
-                    item {
+                    item(key = "taste-insight") {
                         SectionCard {
                             Text(text = "你的口味画像", style = MaterialTheme.typography.titleMedium)
                             Text(
@@ -413,7 +419,7 @@ fun ProfileScreen(
             }
 
             // ---------- 退出 ----------
-            item {
+            item(key = "logout") {
                 OutlinedButton(
                     onClick = { confirmingLogout = true },
                     modifier = Modifier
@@ -424,7 +430,7 @@ fun ProfileScreen(
                 }
             }
 
-            item { Box(Modifier.height(24.dp)) }
+            item(key = "bottom-spacer") { Box(Modifier.height(24.dp)) }
         }
     }
 

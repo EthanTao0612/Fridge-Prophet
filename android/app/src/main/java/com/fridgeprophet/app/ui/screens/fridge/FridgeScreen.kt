@@ -237,6 +237,18 @@ private fun expiryLine(daysLeft: Int?, expiryDate: String?): String {
     return "$expiryDate · $day"
 }
 
+/**
+ * 常用单位快捷项。
+ *
+ * 保留自由输入是为了「半把」「1 提」这种没法枚举的量；
+ * 但「克 / 千克 / 毫升」这些高频单位点一下比手打快，
+ * 也不容易打成「kg」「G」这种后端认不出的写法 ——
+ * 单位对不上会被当成「大概率有」，采购清单就会漏东西。
+ */
+private val UNIT_PRESETS = listOf(
+    "个", "克", "千克", "毫升", "升", "斤", "盒", "袋", "把", "颗",
+)
+
 /** 保质期快捷选项。null = 交给后端按食材名估算。 */
 private val SHELF_LIFE_PRESETS = listOf(
     null to "系统估算",
@@ -261,6 +273,9 @@ private fun AddItemDialog(
     // 购买日期默认今天 —— 绝大多数情况下用户就是刚买回来才录入
     var purchaseDate by remember { mutableStateOf(LocalDate.now()) }
     var shelfLifeDays by remember { mutableStateOf<Int?>(null) }
+    // 手填的天数。和 shelfLifeDays 是同一个值的两种表达：
+    // 输入框里保留原文（方便继续改），shelfLifeDays 才是提交给后端的那个。
+    var customDays by remember { mutableStateOf("") }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -293,6 +308,15 @@ private fun AddItemDialog(
                         modifier = Modifier.weight(1f),
                     )
                 }
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    UNIT_PRESETS.forEach { u ->
+                        FilterChip(
+                            selected = unit == u,
+                            onClick = { unit = u },
+                            label = { Text(u) },
+                        )
+                    }
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf("冷藏", "冷冻", "常温").forEach { loc ->
                         FilterChip(
@@ -321,12 +345,31 @@ private fun AddItemDialog(
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     SHELF_LIFE_PRESETS.forEach { (days, label) ->
                         FilterChip(
-                            selected = shelfLifeDays == days,
-                            onClick = { shelfLifeDays = days },
+                            // 手填了天数就以手填的为准，快捷项取消高亮
+                            selected = customDays.isBlank() && shelfLifeDays == days,
+                            onClick = {
+                                shelfLifeDays = days
+                                customDays = ""
+                            },
                             label = { Text(label) },
                         )
                     }
                 }
+                // 包装上印的是「保质期 45 天」这种不在预设里的值，必须能手填。
+                // 和快捷项是互斥的：填了就以手填的为准。
+                OutlinedTextField(
+                    value = customDays,
+                    onValueChange = { text ->
+                        customDays = text.filter { it.isDigit() }.take(4)
+                        shelfLifeDays = customDays.toIntOrNull()
+                    },
+                    label = { Text("或自己填天数") },
+                    placeholder = { Text("比如 45") },
+                    suffix = { Text("天") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth(),
+                )
                 Text(
                     text = "不确定就选「系统估算」，会按食材名查内置的默认保质期。",
                     style = MaterialTheme.typography.labelMedium,
