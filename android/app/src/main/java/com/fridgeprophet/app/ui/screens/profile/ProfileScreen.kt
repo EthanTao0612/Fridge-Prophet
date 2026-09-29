@@ -45,10 +45,8 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.fridgeprophet.app.data.remote.dto.FamilyMemberIn
 import com.fridgeprophet.app.data.remote.dto.FamilyMemberOut
-import com.fridgeprophet.app.data.remote.dto.HealthPreferenceIn
 import com.fridgeprophet.app.data.remote.dto.HealthPreferenceOut
 import com.fridgeprophet.app.data.remote.dto.OptionGroup
-import com.fridgeprophet.app.data.remote.dto.PrivacySettingIn
 import com.fridgeprophet.app.data.remote.dto.PrivacySettingOut
 import com.fridgeprophet.app.data.remote.dto.ProfileOut
 import com.fridgeprophet.app.data.remote.dto.UserOptions
@@ -319,8 +317,7 @@ fun ProfileScreen(
             item(key = "health") {
                 HealthCard(
                     health = profile.health,
-                    busy = state.busy,
-                    onToggle = { input -> viewModel.saveHealth(input) },
+                    onToggle = viewModel::updateHealth,
                     onEditBody = { editingBody = true },
                 )
             }
@@ -409,8 +406,7 @@ fun ProfileScreen(
             item(key = "privacy") {
                 PrivacyCard(
                     privacy = profile.privacy,
-                    busy = state.busy,
-                    onToggle = { input -> viewModel.savePrivacy(input) },
+                    onToggle = viewModel::updatePrivacy,
                 )
             }
 
@@ -513,8 +509,10 @@ fun ProfileScreen(
             busy = state.busy,
             onDismiss = { editingBody = false },
             onConfirm = { height, weight, age, activity ->
-                viewModel.saveHealth(
-                    profile.health.toInput(
+                // 和开关走同一条路径：乐观更新 + 防抖保存。
+                // 用 copy 而不是手写整个对象 —— 少一个字段就少一次静默丢数据。
+                viewModel.updateHealth(
+                    profile.health.copy(
                         heightCm = height,
                         weightKg = weight,
                         age = age,
@@ -672,8 +670,10 @@ private fun PreferenceCard(
 @Composable
 private fun HealthCard(
     health: HealthPreferenceOut,
-    busy: Boolean,
-    onToggle: (HealthPreferenceIn) -> Unit,
+    // 传「更新后的整份偏好」，而不是「提交用的 Input」：
+    // 界面这边只需要 `health.copy(字段 = 新值)`，
+    // 转成 Input 是 ViewModel 的事，界面不该关心提交格式。
+    onToggle: (HealthPreferenceOut) -> Unit,
     onEditBody: () -> Unit,
 ) {
     val goals = health.enabledGoals()
@@ -692,12 +692,12 @@ private fun HealthCard(
         )
 
         Column(modifier = Modifier.padding(top = 6.dp)) {
-            SwitchRow("低卡", health.lowCarb, busy) { onToggle(health.toInput(lowCarb = it)) }
-            SwitchRow("低钠", health.lowSodium, busy) { onToggle(health.toInput(lowSodium = it)) }
-            SwitchRow("低脂", health.lowFat, busy) { onToggle(health.toInput(lowFat = it)) }
-            SwitchRow("高蛋白", health.highProtein, busy) { onToggle(health.toInput(highProtein = it)) }
-            SwitchRow("高纤维", health.highFiber, busy) { onToggle(health.toInput(highFiber = it)) }
-            SwitchRow("素食", health.vegetarian, busy) { onToggle(health.toInput(vegetarian = it)) }
+            SwitchRow("低卡", health.lowCarb) { onToggle(health.copy(lowCarb = it)) }
+            SwitchRow("低钠", health.lowSodium) { onToggle(health.copy(lowSodium = it)) }
+            SwitchRow("低脂", health.lowFat) { onToggle(health.copy(lowFat = it)) }
+            SwitchRow("高蛋白", health.highProtein) { onToggle(health.copy(highProtein = it)) }
+            SwitchRow("高纤维", health.highFiber) { onToggle(health.copy(highFiber = it)) }
+            SwitchRow("素食", health.vegetarian) { onToggle(health.copy(vegetarian = it)) }
 
             // ---- 扩充项 ----
             HorizontalDivider(
@@ -708,32 +708,27 @@ private fun HealthCard(
                 label = "控糖",
                 hint = "少用精制糖和高糖水果",
                 checked = health.lowSugar,
-                busy = busy,
-            ) { onToggle(health.toInput(lowSugar = it)) }
+            ) { onToggle(health.copy(lowSugar = it)) }
             SwitchRow(
                 label = "补钙",
                 hint = "多推荐奶制品、豆制品、深绿蔬菜",
                 checked = health.highCalcium,
-                busy = busy,
-            ) { onToggle(health.toInput(highCalcium = it)) }
+            ) { onToggle(health.copy(highCalcium = it)) }
             SwitchRow(
                 label = "补铁",
                 hint = "多推荐红肉、动物肝脏、血制品",
                 checked = health.highIron,
-                busy = busy,
-            ) { onToggle(health.toInput(highIron = it)) }
+            ) { onToggle(health.copy(highIron = it)) }
             SwitchRow(
                 label = "低嘌呤",
                 hint = "痛风 / 高尿酸适用，避开内脏、浓汤、部分海鲜",
                 checked = health.lowPurine,
-                busy = busy,
-            ) { onToggle(health.toInput(lowPurine = it)) }
+            ) { onToggle(health.copy(lowPurine = it)) }
             SwitchRow(
                 label = "不吃生食",
                 hint = "孕期、免疫力较低时建议打开",
                 checked = health.noRawFood,
-                busy = busy,
-            ) { onToggle(health.toInput(noRawFood = it)) }
+            ) { onToggle(health.copy(noRawFood = it)) }
         }
 
         HorizontalDivider(
@@ -798,8 +793,8 @@ private fun HealthPreferenceOut.enabledGoals(): List<String> = buildList {
 @Composable
 private fun PrivacyCard(
     privacy: PrivacySettingOut,
-    busy: Boolean,
-    onToggle: (PrivacySettingIn) -> Unit,
+    // 同 HealthCard：传更新后的整份对象，提交格式由 ViewModel 负责
+    onToggle: (PrivacySettingOut) -> Unit,
 ) {
     val opened = privacy.openedSections()
     CollapsibleCard(
@@ -822,32 +817,27 @@ private fun PrivacyCard(
                 label = "饮食偏好",
                 hint = "菜系、口味、忌口",
                 checked = privacy.sharePreference,
-                busy = busy,
-            ) { onToggle(privacy.toInput(sharePreference = it)) }
+            ) { onToggle(privacy.copy(sharePreference = it)) }
             SwitchRow(
                 label = "健康偏好",
                 hint = "低卡、低钠这类饮食目标",
                 checked = privacy.shareHealth,
-                busy = busy,
-            ) { onToggle(privacy.toInput(shareHealth = it)) }
+            ) { onToggle(privacy.copy(shareHealth = it)) }
             SwitchRow(
                 label = "身体数据",
                 hint = "身高、体重、年龄。比上面两项敏感，单独一个开关",
                 checked = privacy.shareBody,
-                busy = busy,
-            ) { onToggle(privacy.toInput(shareBody = it)) }
+            ) { onToggle(privacy.copy(shareBody = it)) }
             SwitchRow(
                 label = "家庭成员",
                 hint = "家人的称呼与忌口",
                 checked = privacy.shareFamily,
-                busy = busy,
-            ) { onToggle(privacy.toInput(shareFamily = it)) }
+            ) { onToggle(privacy.copy(shareFamily = it)) }
             SwitchRow(
                 label = "做菜统计",
                 hint = "做过多少道菜",
                 checked = privacy.shareStats,
-                busy = busy,
-            ) { onToggle(privacy.toInput(shareStats = it)) }
+            ) { onToggle(privacy.copy(shareStats = it)) }
         }
 
         Text(
@@ -870,12 +860,20 @@ private fun PrivacySettingOut.openedSections(): List<String> = buildList {
 /**
  * 一行开关。hint 是可选的补充说明 —— 像「低嘌呤」这种词，
  * 不解释一句用户根本不知道是干什么用的，会直接跳过。
+ *
+ * ## 为什么不接 busy 参数（曾经接过，是个坑）
+ *
+ * 之前每行都传 `enabled = !busy`，而 `busy` 是**全局**的保存状态。
+ * 结果勾一下「低卡」，整张卡里另外 10 个开关**同时**变成禁用态、
+ * 灰一下再恢复 —— 用户看到的就是「其他选项在闪」。
+ *
+ * 现在不靠禁用防连点，靠 ViewModel 里的乐观更新 + 防抖：
+ * 界面立刻跟手，请求合并成一次。开关不需要被禁用。
  */
 @Composable
 private fun SwitchRow(
     label: String,
     checked: Boolean,
-    busy: Boolean,
     hint: String? = null,
     onChange: (Boolean) -> Unit,
 ) {
@@ -896,7 +894,7 @@ private fun SwitchRow(
                 )
             }
         }
-        Switch(checked = checked, onCheckedChange = onChange, enabled = !busy)
+        Switch(checked = checked, onCheckedChange = onChange)
     }
 }
 
@@ -1322,48 +1320,3 @@ private fun toggleItem(raw: String, item: String): String {
 
 /** 后端 `/users/avatar` 的 MIME 白名单，必须和 backend/app/api/v1/users.py 的 AVATAR_MIME 一致 */
 private val AVATAR_ALLOWED_MIME = setOf("image/jpeg", "image/jpg", "image/png", "image/webp")
-
-
-/**
- * 把「改一个开关」表达成完整的入参。
- *
- * 后端接口要求整个健康偏好对象，但界面上一次只动一个开关，
- * 所以用默认参数把其余字段原样带过去。
- *
- * ⚠️ 新增健康偏好字段时**必须同步加到这里**，否则会出静默数据丢失：
- * 用户打开「低糖」时，其余字段会按这里的默认值提交，
- * 漏掉的字段就会被后端覆盖成 false —— 表现为「开了低糖，高钙自己关了」。
- */
-private fun HealthPreferenceOut.toInput(
-    lowCarb: Boolean = this.lowCarb,
-    lowSodium: Boolean = this.lowSodium,
-    lowFat: Boolean = this.lowFat,
-    highProtein: Boolean = this.highProtein,
-    highFiber: Boolean = this.highFiber,
-    vegetarian: Boolean = this.vegetarian,
-    lowSugar: Boolean = this.lowSugar,
-    highCalcium: Boolean = this.highCalcium,
-    highIron: Boolean = this.highIron,
-    lowPurine: Boolean = this.lowPurine,
-    noRawFood: Boolean = this.noRawFood,
-    heightCm: Double? = this.heightCm,
-    weightKg: Double? = this.weightKg,
-    age: Int? = this.age,
-    activityLevel: String? = this.activityLevel,
-): HealthPreferenceIn = HealthPreferenceIn(
-    lowCarb = lowCarb,
-    lowSodium = lowSodium,
-    lowFat = lowFat,
-    highProtein = highProtein,
-    highFiber = highFiber,
-    vegetarian = vegetarian,
-    lowSugar = lowSugar,
-    highCalcium = highCalcium,
-    highIron = highIron,
-    lowPurine = lowPurine,
-    noRawFood = noRawFood,
-    heightCm = heightCm,
-    weightKg = weightKg,
-    age = age,
-    activityLevel = activityLevel,
-)

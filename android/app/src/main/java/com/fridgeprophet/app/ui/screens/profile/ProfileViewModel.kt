@@ -7,6 +7,7 @@ import com.fridgeprophet.app.core.DataRefreshBus
 import com.fridgeprophet.app.core.TokenStore
 import com.fridgeprophet.app.data.remote.dto.FamilyMemberIn
 import com.fridgeprophet.app.data.remote.dto.HealthPreferenceIn
+import com.fridgeprophet.app.data.remote.dto.HealthPreferenceOut
 import com.fridgeprophet.app.data.remote.dto.PreferenceInsights
 import com.fridgeprophet.app.data.remote.dto.PrivacySettingIn
 import com.fridgeprophet.app.data.remote.dto.PrivacySettingOut
@@ -14,6 +15,8 @@ import com.fridgeprophet.app.data.remote.dto.ProfileOut
 import com.fridgeprophet.app.data.remote.dto.UserOptions
 import com.fridgeprophet.app.data.repository.ProfileRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -21,6 +24,14 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.io.File
 import javax.inject.Inject
+
+/**
+ * 开关类设置的保存防抖时间。
+ *
+ * 350ms 是「感觉不到延迟」和「能合并连点」的平衡点：
+ * 太短（<150ms）合并不了连点，太长（>800ms）用户会以为没保存上。
+ */
+private const val SAVE_DEBOUNCE_MS = 350L
 
 data class ProfileUiState(
     val loading: Boolean = true,
@@ -42,6 +53,13 @@ class ProfileViewModel @Inject constructor(
 
     private val _state = MutableStateFlow(ProfileUiState())
     val state: StateFlow<ProfileUiState> = _state.asStateFlow()
+
+    /**
+     * 开关类设置的保存任务。勾选时**不立刻发请求**，
+     * 等 [SAVE_DEBOUNCE_MS] 内没有新动作再发。理由见 [toggleHealth] 的注释。
+     */
+    private var healthSaveJob: Job? = null
+    private var privacySaveJob: Job? = null
 
     init {
         load()
@@ -183,18 +201,64 @@ class ProfileViewModel @Inject constructor(
         }
     }
 
-    fun saveHealth(body: HealthPreferenceIn) {
-        _state.update { it.copy(busy = true, error = null, message = null) }
+    /**
+     * 更新健康偏好。两个入口共用这一条路径：
+     * 勾选开关（`health.copy(字段 = 新值)`）、
+     * 以及「编辑身体数据」弹窗确认（`copy(heightCm = ..., ...)`）。
+     *
+     * ## 为什么不能「等服务器回包再改界面」
+     *
+     * 原来的写法是：把整份偏好发出去 → 等回包 → 再 `load()` 拉一次全量。
+     * 一次勾选要跑**三个请求**（保存 + 画像 + 口味洞察），
+     * 而且开关的位置要等第一个请求回来才变 —— 手指点下去没反应、
+     * 过一会儿才跳过去，就是用户说的「一卡一卡」。
+     *
+     * 现在改成**乐观更新**：先把本地状态改掉，开关立刻跟手，
+     * 保存请求在后台跑。存失败了再从服务器拉回真实状态 —— 界面不能骗人。
+     *
+     * ## 为什么要防抖
+     *
+     * 每个请求发的是**整份**偏好（后端 PUT 是全量覆盖）。
+     * 连点几个开关会并发发出多个请求，而它们到达服务器的顺序没有保证 ——
+     * 后发的先到就会被先发的覆盖，用户看到的是「我刚打开的又被关回去了」。
+     * 等一小会儿没有新动作再发，既合并了请求，也保证发出去的是最后那份状态。
+     *
+     * ## 为什么不设 busy
+     *
+     * 以前勾一下会把 `busy` 置 true，而 `busy` 是**全局**的：
+     * 头像那行提示会变成「处理中…」、别的卡片一起被禁用。
+     * 一个开关的保存不该让整页抖一下。
+     */
+    fun updateHealth(updated: HealthPreferenceOut) {
+        // ① 立刻更新界面 —— 这是「跟手」的关键
+        _state.update { st ->
+            st.copy(
+                profile = st.profile?.copy(health = updated),
+                error = null,
+                message = null,
+            )
+        }
 
-        viewModelScope.launch {
-            when (val result = profileRepository.saveHealth(body)) {
+        // ② 等一小会儿再发，把连点合并成一次请求
+        healthSaveJob?.cancel()
+        healthSaveJob = viewModelScope.launch {
+            delay(SAVE_DEBOUNCE_MS)
+            when (val result = profileRepository.saveHealth(updated.toInput())) {
                 is ApiResult.Success -> {
-                    _state.update { it.copy(busy = false, message = "健康偏好已保存") }
+                    _state.update { st ->
+                        st.copy(
+                            profile = st.profile?.copy(health = result.data),
+                            message = "健康偏好已保存",
+                        )
+                    }
+                    // 健康目标会影响推荐，通知菜谱页重新拉
                     refreshBus.notify(DataRefreshBus.Topic.RECIPES)
+                }
+                is ApiResult.Failure -> {
+                    _state.update { it.copy(error = result.message) }
+                    // 没存上，就不能让界面继续显示那个值
                     load(silent = true)
                 }
-                is ApiResult.Failure ->
-                    _state.update { it.copy(busy = false, error = result.message) }
             }
         }
     }
@@ -208,24 +272,38 @@ class ProfileViewModel @Inject constructor(
      * 表现就是「我打开了 A，B 自己关了」。
      * 这和健康偏好那边是同一个坑，所以调用方要用 `toInput()` 带上全部 5 项。
      */
-    fun savePrivacy(body: PrivacySettingIn) {
-        _state.update { it.copy(busy = true, error = null, message = null) }
+    /**
+     * 更新「在广场公开什么」。修法和 [updateHealth] 一致：
+     * 乐观更新 + 防抖 + 不设全局 busy。
+     *
+     * 这里原本已经做对了一半 —— 保存后用返回值就地更新，没有重新 `load()`。
+     * 但「等回包开关才动」和「全局 busy 让整页抖」两个问题还在，所以一起改掉。
+     */
+    fun updatePrivacy(updated: PrivacySettingOut) {
+        _state.update { st ->
+            st.copy(
+                profile = st.profile?.copy(privacy = updated),
+                error = null,
+                message = null,
+            )
+        }
 
-        viewModelScope.launch {
-            when (val result = profileRepository.savePrivacy(body)) {
+        privacySaveJob?.cancel()
+        privacySaveJob = viewModelScope.launch {
+            delay(SAVE_DEBOUNCE_MS)
+            when (val result = profileRepository.savePrivacy(updated.toInput())) {
                 is ApiResult.Success -> {
-                    // 用返回值就地更新，而不是再 load() 一次：
-                    // 重新拉整个画像要等一次网络往返，开关会先回弹再跳过去，很难看。
                     _state.update { st ->
                         st.copy(
-                            busy = false,
                             profile = st.profile?.copy(privacy = result.data),
                             message = privacyMessage(result.data),
                         )
                     }
                 }
-                is ApiResult.Failure ->
-                    _state.update { it.copy(busy = false, error = result.message) }
+                is ApiResult.Failure -> {
+                    _state.update { it.copy(error = result.message) }
+                    load(silent = true)
+                }
             }
         }
     }
@@ -294,6 +372,35 @@ fun PrivacySettingOut.toInput(
     shareBody = shareBody,
     shareFamily = shareFamily,
     shareStats = shareStats,
+)
+
+/**
+ * 同 [PrivacySettingOut.toInput]，把健康偏好原样转成提交用的对象。
+ *
+ * ⚠️ 必须带上**全部 15 个字段**（含身高、体重、年龄、活动量）。
+ * 后端 PUT 是全量覆盖 —— 漏掉哪个，那个字段就会被按默认值写回去，
+ * 表现就是「我改了 A，B 自己没了」。
+ *
+ * 这个函数原来写在 ProfileScreen 里（带一堆默认参数供界面拼装）。
+ * 改成界面直接传 `health.copy(...)` 之后，它就只需要「原样转换」这一种用法了，
+ * 于是搬到 ViewModel —— 和 privacy 的那个放一起。
+ */
+fun HealthPreferenceOut.toInput(): HealthPreferenceIn = HealthPreferenceIn(
+    lowCarb = lowCarb,
+    lowSodium = lowSodium,
+    lowFat = lowFat,
+    highProtein = highProtein,
+    highFiber = highFiber,
+    vegetarian = vegetarian,
+    lowSugar = lowSugar,
+    highCalcium = highCalcium,
+    highIron = highIron,
+    lowPurine = lowPurine,
+    noRawFood = noRawFood,
+    heightCm = heightCm,
+    weightKg = weightKg,
+    age = age,
+    activityLevel = activityLevel,
 )
 
 /** 开关变动后给一句人话反馈，而不是干巴巴的「已保存」。 */
