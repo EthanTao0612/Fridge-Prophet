@@ -133,11 +133,29 @@ def _build_user_prompt(
     max_time: int,
     expiring: list[str],
     extra_notes: str | None,
+    exclude: list[str] | None = None,
 ) -> str:
     expiring_line = (
         f"\n⚠️ 即将过期，请优先消耗：{'、'.join(expiring)}\n" if expiring else ""
     )
     notes = f"\n用户补充说明：{extra_notes}\n" if extra_notes else ""
+
+    # 已经推荐过的菜名要**明确列出来**让模型避开。
+    #
+    # 不告诉它的话，模型每次都把最适合这份库存的那几道再给一遍 ——
+    # 实测：同一个冰箱连点三次「生成新菜谱」，拿到的都是
+    # 「番茄炒蛋 + 青椒鸡胸肉 + 第三道略变」，前两道一模一样。
+    # 而落库是按菜名 upsert 的（见 api/v1/recipes.py），
+    # 重复的名字只会覆盖旧行，**列表永远长不大** ——
+    # 用户感受就是「能生成的菜非常有限」。
+    exclude_line = ""
+    if exclude:
+        exclude_line = (
+            f"\n【已经推荐过，请勿重复】{'、'.join(exclude)}\n"
+            f"上面这些菜用户已经看过了。请推荐**完全不同**的菜，"
+            f"哪怕换个主料、换个做法都行，就是不要重复上面的菜名。\n"
+        )
+
     return f"""请为用户推荐 {count} 道菜。
 
 【冰箱现有库存】（这是唯一真实存在的食材，不得声称拥有其他食材）
@@ -145,7 +163,7 @@ def _build_user_prompt(
 {expiring_line}
 【用户画像与约束】
 {_fmt_preference(pref, health)}
-
+{exclude_line}
 【额外要求】
 - 每道菜烹饪时间不超过 {max_time} 分钟
 - 尽量只用库存里已有的食材，把缺的东西明确列出来
@@ -320,8 +338,14 @@ def generate_recipes(
     max_time: int | None = None,
     expiring: list[str] | None = None,
     extra_notes: str | None = None,
+    exclude: list[str] | None = None,
 ) -> tuple[list[RecipeOut], str]:
-    """返回 (菜谱列表, 使用的模型名)。"""
+    """返回 (菜谱列表, 使用的模型名)。
+
+    `exclude` 是**用户已经有的菜名**，会写进提示词让模型避开 ——
+    不传的话模型每次都推荐同样的几道，而落库又是按菜名去重的，
+    结果就是「点多少次列表都不变」。
+    """
     expiring = expiring or []
     effective_max_time = max_time or (pref.cook_time_max if pref else 30)
 
@@ -335,7 +359,7 @@ def generate_recipes(
                 system=RECIPE_SYSTEM_PROMPT,
                 user_text=_build_user_prompt(
                     inventory, pref, health, count, effective_max_time,
-                    expiring, extra_notes,
+                    expiring, extra_notes, exclude,
                 ),
                 model=settings.TEXT_MODEL,
                 temperature=0.7,

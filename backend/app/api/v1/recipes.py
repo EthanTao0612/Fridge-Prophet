@@ -223,6 +223,27 @@ def _row_to_out(row: Recipe) -> RecipeOut:
 def generate(payload: RecipeGenerateRequest, user: CurrentUser, db: DbSession):
     inventory, expiring, pref, health = _load_context(db, user.id)
 
+    # 把「用户已经有的菜名」带进提示词，让模型避开重复。
+    #
+    # 为什么必须做：模型每次都会把最适合这份库存的那几道再推荐一遍，
+    # 而落库是按菜名 upsert 的 —— 重复的名字只覆盖旧行、不新增。
+    # 实测同一个冰箱连点三次「生成新菜谱」，前两道菜一模一样
+    #（番茄炒蛋 + 青椒鸡胸肉），列表卡在 3 道不动，
+    # 用户感受就是「能生成的菜非常有限」。
+    #
+    # 只取最近 30 个：菜谱攒多了以后，把上百个名字塞进提示词会拖慢生成，
+    # 而「别重复最近这些」已经足够解决问题。
+    exclude = [
+        name
+        for (name,) in (
+            db.query(Recipe.name)
+            .filter(Recipe.user_id.in_(visible_user_ids(db, user.id)))
+            .order_by(Recipe.created_at.desc())
+            .limit(30)
+            .all()
+        )
+    ]
+
     recipes, model_name = generate_recipes(
         inventory=inventory,
         pref=pref,
@@ -231,6 +252,7 @@ def generate(payload: RecipeGenerateRequest, user: CurrentUser, db: DbSession):
         max_time=payload.max_time_minutes,
         expiring=expiring if payload.prioritize_expiring else [],
         extra_notes=payload.extra_notes,
+        exclude=exclude,
     )
 
     if payload.save:
