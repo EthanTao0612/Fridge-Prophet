@@ -111,10 +111,17 @@ class ProfileViewModel @Inject constructor(
         viewModelScope.launch {
             when (val result = profileRepository.updateNickname(nickname.trim())) {
                 is ApiResult.Success -> {
-                    _state.update {
-                        it.copy(busy = false, message = "昵称已更新")
+                    // 响应里已经带了更新后的用户，就地更新即可。
+                    // 原来这里是 `load(silent = true)` —— 那要多跑两个请求
+                    //（画像 + 口味洞察），而且界面会先闪一下旧昵称。
+                    // 和 updateHealth 是同一个道理：**保存的返回值够用就别再拉一次**。
+                    _state.update { st ->
+                        st.copy(
+                            busy = false,
+                            profile = st.profile?.copy(user = result.data),
+                            message = "昵称已更新",
+                        )
                     }
-                    load(silent = true)
                 }
                 is ApiResult.Failure ->
                     _state.update { it.copy(busy = false, error = result.message) }
@@ -134,8 +141,14 @@ class ProfileViewModel @Inject constructor(
         viewModelScope.launch {
             when (val result = profileRepository.uploadAvatar(file, mimeType)) {
                 is ApiResult.Success -> {
-                    _state.update { it.copy(busy = false, message = "头像已更新") }
-                    load(silent = true)
+                    // 同上：头像 URL 就在响应里，不用再拉一次全量
+                    _state.update { st ->
+                        st.copy(
+                            busy = false,
+                            profile = st.profile?.copy(user = result.data),
+                            message = "头像已更新",
+                        )
+                    }
                 }
                 is ApiResult.Failure ->
                     _state.update { it.copy(busy = false, error = result.message) }
@@ -157,13 +170,14 @@ class ProfileViewModel @Inject constructor(
         viewModelScope.launch {
             when (val result = profileRepository.updateBio(bio.trim())) {
                 is ApiResult.Success -> {
-                    _state.update {
-                        it.copy(
+                    // 响应里带了更新后的用户，就地更新，不再多拉一次全量
+                    _state.update { st ->
+                        st.copy(
                             busy = false,
+                            profile = st.profile?.copy(user = result.data),
                             message = if (bio.isBlank()) "简介已清空" else "简介已更新",
                         )
                     }
-                    load(silent = true)
                 }
                 is ApiResult.Failure ->
                     _state.update { it.copy(busy = false, error = result.message) }
@@ -191,9 +205,16 @@ class ProfileViewModel @Inject constructor(
                 allergies = allergies,
             )) {
                 is ApiResult.Success -> {
-                    _state.update { it.copy(busy = false, message = "偏好已保存，下次生成菜谱会按新偏好来") }
+                    // 响应里带了保存后的偏好，就地更新即可
+                    _state.update { st ->
+                        st.copy(
+                            busy = false,
+                            profile = st.profile?.copy(preference = result.data),
+                            message = "偏好已保存，下次生成菜谱会按新偏好来",
+                        )
+                    }
+                    // 偏好会影响推荐，通知菜谱页重新拉
                     refreshBus.notify(DataRefreshBus.Topic.RECIPES)
-                    load(silent = true)
                 }
                 is ApiResult.Failure ->
                     _state.update { it.copy(busy = false, error = result.message) }
@@ -319,6 +340,12 @@ class ProfileViewModel @Inject constructor(
             when (val result = profileRepository.addFamily(body)) {
                 is ApiResult.Success -> {
                     _state.update { it.copy(busy = false, message = "已添加家庭成员") }
+                    // ⚠️ 这里**故意**保留重新拉取，别「顺手」改成就地追加。
+                    // 接口只返回新建的那一个成员，而页面存的是**整个列表**；
+                    // 后端可能会按名字合并重名、或改变排序 ——
+                    // 就地 `familyMembers + result.data` 猜错了就会多出一条重复的。
+                    // 其他地方（昵称/头像/简介/偏好/开关）都是单个对象、响应里带全了，
+                    // 所以那些才改成就地更新。
                     load(silent = true)
                 }
                 is ApiResult.Failure ->
@@ -333,8 +360,17 @@ class ProfileViewModel @Inject constructor(
         viewModelScope.launch {
             when (val result = profileRepository.deleteFamily(id)) {
                 is ApiResult.Success -> {
-                    _state.update { it.copy(busy = false) }
-                    load(silent = true)
+                    // 接口返回 204 没有响应体，按 id 从本地列表摘掉即可。
+                    // 删除是按 id 精确匹配的，不存在「后端可能合并或重排」的问题 ——
+                    // 这跟 addFamily 不一样，那个才需要重新拉。
+                    _state.update { st ->
+                        st.copy(
+                            busy = false,
+                            profile = st.profile?.let { p ->
+                                p.copy(familyMembers = p.familyMembers.filterNot { it.id == id })
+                            },
+                        )
+                    }
                 }
                 is ApiResult.Failure ->
                     _state.update { it.copy(busy = false, error = result.message) }
