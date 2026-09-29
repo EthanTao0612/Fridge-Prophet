@@ -94,7 +94,12 @@ fun ScanScreen(
                         style = MaterialTheme.typography.titleMedium,
                     )
                     Text(
-                        text = "多模态模型在逐项判断种类和数量，通常需要 5-20 秒",
+                        // 耗时和画面里的食材数量成正比 —— 模型是一个一个往下写的，
+                        // 写得越多越慢。2026-09-29 实测（真实 AI）：
+                        //   1 样 → 3 秒；40 样 → 51 秒
+                        // 原来这里写的是「通常需要 5-20 秒」，对拍满一整箱的情况是错的，
+                        // 会让人以为卡住了。所以改成按数量分档说明。
+                        text = "模型要逐项判断种类和数量，食材越多越慢：几样大约 3 秒，十几样约 20 秒。",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center,
