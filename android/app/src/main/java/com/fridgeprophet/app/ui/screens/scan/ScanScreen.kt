@@ -56,8 +56,9 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.fridgeprophet.app.R
 import com.fridgeprophet.app.ui.components.EmptyState
+import com.fridgeprophet.app.ui.components.shrinkCapturedPhoto
+import com.fridgeprophet.app.ui.components.uriToCacheFile
 import java.io.File
-import java.io.FileOutputStream
 
 @Composable
 fun ScanScreen(
@@ -167,7 +168,10 @@ private fun CameraPhase(
         ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         uri ?: return@rememberLauncherForActivityResult
-        runCatching { copyToCache(context, uri) }
+        // 走和头像同一个函数：它会按需压缩（原图可能十几 MB，直接传会超上限）
+        runCatching {
+            uriToCacheFile(context, uri, "scan")?.first ?: error("无法读取所选图片")
+        }
             .onSuccess(onImageReady)
             .onFailure { cameraError = "读取图片失败：${it.message}" }
     }
@@ -321,7 +325,10 @@ private fun CameraPhase(
                                 executor,
                                 object : ImageCapture.OnImageSavedCallback {
                                     override fun onImageSaved(results: ImageCapture.OutputFileResults) {
-                                        onImageReady(file)
+                                        // 相机原图也要压。CameraX 是直接往 File 里写的，
+                                        // 不走相册那条 Uri 路径 —— 漏了这一句，
+                                        // 最常用的拍照入口传的还是十几 MB 的原图。
+                                        onImageReady(shrinkCapturedPhoto(context, file))
                                     }
 
                                     override fun onError(exception: ImageCaptureException) {
@@ -353,12 +360,6 @@ private fun CameraPhase(
     }
 }
 
-/** 相册选中的图片复制到缓存目录，统一走上传逻辑 */
-private fun copyToCache(context: Context, uri: Uri): File {
-    val target = File(context.cacheDir, "scan_${System.currentTimeMillis()}.jpg")
-    context.contentResolver.openInputStream(uri).use { input ->
-        requireNotNull(input) { "无法打开所选图片" }
-        FileOutputStream(target).use { output -> input.copyTo(output) }
-    }
-    return target
-}
+// 原来这里有个 copyToCache()，是 uriToCacheFile() 的重复实现，而且不做压缩。
+// 现在两处都走 components/PickedImage.kt 里的 uriToCacheFile() ——
+// 压缩、EXIF 补正、MIME 判定都在那一处，不会再出现「改了一边漏了另一边」。
