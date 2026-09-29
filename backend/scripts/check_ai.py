@@ -22,11 +22,9 @@ OK = "  [OK]  "
 BAD = "  [FAIL]"
 WARN = "  [WARN]"
 
-# 1x1 透明 PNG，用来测试视觉模型
-TINY_PNG = base64.b64decode(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8"
-    "z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
-)
+# 视觉模型那一项改用 static/ingredients/broccoli.jpg 了 ——
+# 这里原来是个 1x1 的透明 PNG，模型会直接拒收（要求宽高大于 10），
+# 导致那一项永远失败、误报成「视觉模型坏了」。
 
 
 def diagnose(exc: Exception) -> None:
@@ -103,31 +101,53 @@ def main() -> int:
         problems += 1
 
     print("\n=== 2. 视觉模型 ===")
-    try:
-        b64 = base64.b64encode(TINY_PNG).decode("ascii")
-        resp = client.chat.completions.create(
-            model=settings.VISION_MODEL,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "这张图里有什么？一句话回答。"},
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:image/png;base64,{b64}"},
-                        },
-                    ],
-                }
-            ],
-            max_tokens=64,
-        )
-        text = (resp.choices[0].message.content or "").strip()
-        print(f"{OK} 调用成功，返回: {text[:120]}")
-        print(f"         模型: {resp.model}")
-    except Exception as exc:  # noqa: BLE001
-        print(f"{BAD} 调用失败")
-        diagnose(exc)
-        problems += 1
+    # 用项目里**真实的食材照片**，而不是一个 1x1 的占位图。
+    #
+    # ⚠️ 这里原来用的是 1x1 的透明 PNG，模型直接拒收
+    #（要求宽高都大于 10），所以这一项**永远不可能通过** ——
+    # 会把人误导成「视觉模型有问题」，其实 key 和模型名都没问题。
+    # 换成真图之后，这一项不但验「通不通」，还顺带验「认不认得出来」。
+    sample = BACKEND_DIR / "static" / "ingredients" / "broccoli.jpg"
+    if not sample.exists():
+        print(f"{WARN} 找不到示例图 {sample.name}，跳过这一项")
+        print("         （这张图应该随仓库提交，缺了说明仓库不完整）")
+    else:
+        try:
+            b64 = base64.b64encode(sample.read_bytes()).decode("ascii")
+            resp = client.chat.completions.create(
+                model=settings.VISION_MODEL,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "这张图里是什么食材？只回答食材名字，不要别的字。",
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+                            },
+                        ],
+                    }
+                ],
+                max_tokens=32,
+            )
+            text = (resp.choices[0].message.content or "").strip()
+            print(f"{OK} 调用成功，返回: {text[:120]}")
+            print(f"         模型: {resp.model}")
+            print(f"         测试图: {sample.name}（正确答案：西兰花）")
+
+            if any(k in text for k in ("西兰花", "花椰", "broccoli", "西蓝花")):
+                print(f"{OK} 认出来了 ✓ 视觉链路可用")
+            else:
+                print(f"{WARN} 接口通，但没认出这是西兰花 —— 看图能力偏弱。")
+                print("           先别急着换模型：拍照时离近一点、光线亮一点，")
+                print("           通常就能认出来。真不行再换更强的视觉模型。")
+        except Exception as exc:  # noqa: BLE001
+            print(f"{BAD} 调用失败")
+            diagnose(exc)
+            problems += 1
 
     print("\n=== 3. JSON 结构化输出 ===")
     try:

@@ -91,6 +91,14 @@ fun RecipesScreen(
                         strokeWidth = 2.dp,
                         color = MaterialTheme.colorScheme.onPrimary,
                     )
+                    // 配上文字说明，别只转圈。
+                    // 接上真实 AI 之后生成一道菜要好几秒（实测生成 3 道约 20 秒），
+                    // 光转圈用户会以为卡死了，甚至反复点。
+                    // 把「大概要等多久」说出来，等待就变得可以忍受。
+                    Text(
+                        text = "  AI 正在配菜，约需 10~20 秒",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
                 } else {
                     Text("根据冰箱库存生成新菜谱")
                 }
