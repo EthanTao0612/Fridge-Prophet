@@ -46,8 +46,21 @@ app = FastAPI(
         "结合用户画像生成菜谱 → 计算缺料 → 生成采购清单。"
     ),
     lifespan=lifespan,
-    docs_url="/docs",
-    redoc_url="/redoc",
+    # 接口文档只在开发期开。
+    #
+    # `/docs` 会把全部接口结构摊开，而且能直接在页面上调接口 ——
+    # 生产环境暴露它等于给陌生人一份完整的「怎么打我的 API」说明书。
+    #
+    # ⚠️ 这里以前是硬编码的 `/docs` 和 `/redoc`，而 `settings.DEBUG`
+    # 虽然定义了却**全项目没有一处用到**（死配置）。
+    # 结果就是 docs/03 里「上线后加 DEBUG=false 关掉接口文档」这条指引
+    # 加了也没用 —— 文档和代码对不上，是最难发现的一类问题。
+    #
+    # `openapi_url` 也要一起关：只关 `/docs` 的话，
+    # `/openapi.json` 还是能把完整结构吐出来。
+    docs_url="/docs" if settings.DEBUG else None,
+    redoc_url="/redoc" if settings.DEBUG else None,
+    openapi_url="/openapi.json" if settings.DEBUG else None,
 )
 
 # 开发期全开；上线时把 ALLOW_ORIGINS 收紧到你的域名
