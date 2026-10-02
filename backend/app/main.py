@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api.v1.router import api_router
 from app.core.config import settings
 from app.db.session import init_db
+from app.services.storage_service import ensure_bucket
 
 logging.basicConfig(
     level=logging.INFO,
@@ -28,6 +29,30 @@ logger = logging.getLogger("fridge_prophet")
 async def lifespan(app: FastAPI):
     init_db()
     logger.info("数据库已就绪: %s", settings.DATABASE_URL.split("@")[-1])
+
+    # 图片存储：配了 Supabase 就用它，否则落本地磁盘。
+    #
+    # ⚠️ 这里必须**主动检查一次 bucket**。
+    # `ensure_bucket()` 原来只在 scripts/check_supabase.py 里被调用，
+    # 而那个脚本在部署文档 docs/03 里根本没提 —— 忘了跑的话，
+    # 第一次上传会因为 bucket 不存在而失败，然后**静默退回本地磁盘**
+    #（只留一行 warning）。表面上图片照样能显示，
+    # 但「照片不怕服务器重装」这个好处已经没了，
+    # 而且要到服务器真出事那天才会发现。
+    #
+    # 这个函数本身很稳：没配 Supabase 直接返回 False，
+    # 网络不通也只记日志、不抛异常，不会拖垮启动。
+    if settings.supabase_storage_enabled:
+        bucket_ok = ensure_bucket()
+        logger.info(
+            "图片存储: %s",
+            f"Supabase Storage（bucket={settings.SUPABASE_BUCKET}）"
+            if bucket_ok
+            else "⚠️ 本地磁盘 —— Supabase bucket 不可用，已退回",
+        )
+    else:
+        logger.info("图片存储: 本地磁盘（未配置 SUPABASE_URL / SUPABASE_SERVICE_KEY）")
+
     logger.info(
         "AI 状态: %s",
         f"已接入 {settings.VISION_MODEL} / {settings.TEXT_MODEL}"
