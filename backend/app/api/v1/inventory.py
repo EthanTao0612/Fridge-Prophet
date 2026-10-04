@@ -13,6 +13,7 @@ from app.schemas.inventory import (
     ScanConfirmRequest,
 )
 from app.services.family_service import can_write, visible_user_ids
+from app.services.ingredient_category import resolve_category
 from app.services.ingredient_image_service import resolve_ingredient_image
 
 router = APIRouter(prefix="/inventory", tags=["冰箱库存"])
@@ -88,14 +89,22 @@ def _merge_expiry(old: date | None, new: date) -> date:
 def _to_out(item: FoodInventory, today: date) -> InventoryOut:
     """ORM 行 → 返回体。**所有返回食材的地方都必须走这里**。
 
-    配图和剩余天数是**算出来的**，不在表里。放在这里是为了只有一处实现：
-    如果哪个接口自己 `model_validate(row)`，那条路径上的食材就会没有图、
-    没有剩余天数，而且这种缺失是静默的（界面显示占位色块，不报错）。
+    配图、剩余天数和**分类**都是**算出来的**，不在表里。
+    放在这里是为了只有一处实现：如果哪个接口自己 `model_validate(row)`，
+    那条路径上的食材就会没有图、没有剩余天数、分类还是原始值 ——
+    而且这种缺失是静默的（界面显示占位色块，不报错）。
+
+    ⚠️ `category` 这里**覆盖**了表里存的值，用的是 `resolve_category()`
+    归一化之后的结果。为什么不让表里的值直接用：那是 AI 扫描时写进来的，
+    说法不统一（「海鲜」「鱼类」「水产」都是同一类），而且手动添加的食材
+    根本没有。归一化后客户端才能按固定分组渲染。
     """
     days_left = (item.expiry_date - today).days if item.expiry_date else None
     out = InventoryOut.model_validate(item)
     out.days_left = days_left
-    out.image_url = resolve_ingredient_image(item.food_name)
+    out.category = resolve_category(item.food_name, item.category)
+    # 把归一化后的分类一起传进去：没有具体图时用它选万能图
+    out.image_url = resolve_ingredient_image(item.food_name, item.category)
     return out
 
 

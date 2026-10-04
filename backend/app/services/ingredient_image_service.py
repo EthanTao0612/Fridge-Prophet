@@ -53,6 +53,27 @@ INGREDIENT_RULES: tuple[tuple[tuple[str, ...], str], ...] = (
     #  加新规则前先自问：这条的关键词会不会被上面某条先命中？
     #  回归测试见 tests/test_ingredient_rules.py
     # ============================================================
+    # —— 加工过的调味料：不能命中「原料」的图 ——
+    #
+    # 这一类不是「单字抢关键词」，而是**原料规则太宽**：
+    # 「番茄酱」含「番茄」、「花生油」含「花生」，都会命中原料的规则，
+    # 于是给番茄酱配一张新鲜番茄的图、给花生油配一堆花生米。
+    # 而且分类也跟着错（番茄酱会被归进「蔬菜」），所以必须在这里拦掉。
+    (("番茄酱", "蕃茄酱", "番茄沙司"), "seasoning"),
+    (("花生油", "菜籽油", "橄榄油", "玉米油", "葵花籽油", "芝麻油", "香油",
+      "食用油", "色拉油", "调和油"), "seasoning"),
+    (("生抽", "老抽", "酱油", "蚝油", "鱼露", "料酒", "黄酒"), "seasoning"),
+    (("醋",), "seasoning"),                     # 也拦「苹果醋」「陈醋」这类
+    (("豆瓣酱", "甜面酱", "辣椒酱", "芝麻酱", "沙拉酱", "蛋黄酱", "番茄沙司"), "seasoning"),
+
+    # 名字里带动物、但其实不是那种肉的东西
+    (("鸡腿菇", "鸡枞", "鸡油菌", "牛肝菌"), "mushroom"),   # 是菌菇不是鸡/牛
+    (("羊奶", "马奶", "骆驼奶", "水牛奶"), "milk"),        # 是奶不是羊肉
+    # 这两个没有对应的图，故意指向不存在的 key：
+    # 这样 resolve_ingredient_image 会退到「蔬菜」的万能图，
+    # 而不是错误地配一张肉类图。以后补了图直接生效。
+    (("鸡毛菜", "牛蒡"), "leafy-green"),
+
     (("牛油果", "鳄梨"), "avocado"),            # 否则被 beef 的单字「牛」抢走
     (("花生", "花生米", "花生仁"), "peanut"),    # 否则被 rice 的单字「米」抢走
     (("南瓜子", "西瓜子", "瓜子", "松子"), "seeds"),  # 否则被 pumpkin / watermelon 抢走
@@ -155,18 +176,35 @@ def resolve_ingredient_key(name: str) -> str | None:
     return None
 
 
-def resolve_ingredient_image(name: str) -> str | None:
+def resolve_ingredient_image(name: str, stored_category: str | None = None) -> str | None:
     """算出这个食材该用哪张图。返回**相对 URL**，找不到返回 None。
 
-    只返回磁盘上真实存在的图：规则表里写了 key 但图还没生成时，
-    直接返回 None，而不是返回一个 404 的地址 —— 那会在客户端显示成裂图。
+    降级顺序（逐级往下退，**只返回磁盘上真实存在的图**）：
+
+    1. **具体图** —— 规则表命中且有对应文件，比如「西红柿」→ tomato.jpg
+    2. **分类万能图** —— 图库里没有这个食材，就用它所属分类的代表图。
+       比如用户导入了「杨桃」，规则表匹配不上，但它属于水果，
+       就显示 `_universal-fruit.jpg`。**这是 2026-10-03 新增的一级。**
+    3. **None** —— 连万能图都没有，客户端显示「首字 + 色块」占位。
+
+    为什么不直接返回算出来的 key：那会让客户端拿到 404，比显示占位图糟得多。
+    所以每一步都要 `_exists()` 确认文件真的在。
     """
     key = resolve_ingredient_key(name)
-    if key is None:
-        return None
-    if _exists(key):
+    if key and _exists(key):
         return _url(key)
-    logger.debug("食材图 %s 尚未生成，跳过 %s", key, name)
+
+    # 具体图没有（或规则没命中）→ 退到分类万能图
+    from app.services.ingredient_category import resolve_category, universal_image_key
+
+    category = resolve_category(name, stored_category)
+    fallback_key = universal_image_key(category)
+    if fallback_key and _exists(fallback_key):
+        logger.debug("食材 %s 没有具体图，用「%s」万能图", name, category)
+        return _url(fallback_key)
+
+    if key:
+        logger.debug("食材图 %s 尚未生成，且无「%s」万能图，走占位", key, category)
     return None
 
 
