@@ -1,4 +1,5 @@
 """ORM 模型。对应策划书第十五节的数据库设计。"""
+from app.models.food_category import FoodCategory, FoodCategoryItem
 from app.models.inventory import FoodInventory
 from app.models.recipe import MealHistory, Recipe, RecipeFeedback, RecipeIngredient
 from app.models.shopping import ShoppingItem, ShoppingList
@@ -22,6 +23,8 @@ __all__ = [
     "Family",
     "FamilyMembership",
     "FoodInventory",
+    "FoodCategory",
+    "FoodCategoryItem",
     "Recipe",
     "RecipeIngredient",
     "MealHistory",

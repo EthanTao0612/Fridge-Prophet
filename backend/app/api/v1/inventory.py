@@ -4,6 +4,7 @@ from datetime import date, timedelta
 from fastapi import APIRouter, HTTPException, Query, status
 
 from app.api.deps import CurrentUser, DbSession
+from app.models.food_category import FoodCategoryItem
 from app.models.inventory import FoodInventory
 from app.schemas.inventory import (
     ExpiringItem,
@@ -264,6 +265,15 @@ def update_item(
 def delete_item(item_id: int, user: CurrentUser, db: DbSession) -> None:
     _guard_write(db, user.id)
     item = _visible_or_404(db, user.id, item_id)
+
+    # 先把折叠箱里的关联清掉，再删食材。
+    #
+    # ⚠️ 不能指望数据库的 ON DELETE CASCADE：开发用的 SQLite 默认
+    # 不开启外键约束，CASCADE 在那里**根本不生效**，删完会留下孤儿关联行 ——
+    # 折叠箱里显示「3 件」但只列得出 2 件，而且不报错。
+    db.execute(
+        FoodCategoryItem.__table__.delete().where(FoodCategoryItem.inventory_id == item.id)
+    )
     db.delete(item)
     db.commit()
 

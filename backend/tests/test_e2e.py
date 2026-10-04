@@ -1088,6 +1088,115 @@ def main() -> int:
         r = client.get("/api/v1/family", headers=owner_h)
         check("解散后 joined 变回 false", r.json().get("joined") is False, r.text[:200])
 
+        print("\n=== 17c. 自定义折叠箱 ===")
+        # 先备几样食材，不依赖前面几节留下的状态
+        box_items = []
+        for name, qty, unit in (("猪肉", 2, "块"), ("牛肉", 1, "块"), ("金针菇", 2, "把")):
+            r = client.post(
+                "/api/v1/inventory",
+                json={"food_name": name, "quantity": qty, "unit": unit},
+                headers=headers,
+            )
+            check(f"备食材 {name}", r.status_code == 201, r.text[:200])
+            box_items.append(r.json()["id"])
+
+        r = client.get("/api/v1/food-categories", headers=headers)
+        check("初始没有折叠箱", r.status_code == 200 and r.json() == [], r.text[:200])
+
+        r = client.post(
+            "/api/v1/food-categories",
+            json={"name": "火锅材料", "inventory_ids": box_items[:2]},
+            headers=headers,
+        )
+        check("建折叠箱并直接放两样进去", r.status_code == 201, r.text[:200])
+        box = r.json()
+        check("箱子里的食材 id 正确", sorted(box.get("inventory_ids", [])) == sorted(box_items[:2]),
+              str(box)[:200])
+
+        # 名字两边的空格要去掉，否则会出现「看起来是空的」箱子
+        r = client.post("/api/v1/food-categories",
+                        json={"name": "  本周要吃完  "}, headers=headers)
+        check("名字首尾空格被去掉", r.status_code == 201 and r.json()["name"] == "本周要吃完",
+              r.text[:200])
+        box2_id = r.json()["id"]
+
+        r = client.post("/api/v1/food-categories", json={"name": "   "}, headers=headers)
+        check("全是空格的名字被拒", r.status_code == 422, r.text[:200])
+
+        r = client.post("/api/v1/food-categories", json={"name": "火锅材料"}, headers=headers)
+        check("重名被拒", r.status_code == 400, r.text[:200])
+
+        # 加入食材
+        r = client.post(f"/api/v1/food-categories/{box['id']}/items",
+                        json={"inventory_ids": [box_items[2]]}, headers=headers)
+        check("加入第三样食材", r.status_code == 200 and len(r.json()["inventory_ids"]) == 3,
+              r.text[:200])
+
+        # 重复加入不能变成两条
+        r = client.post(f"/api/v1/food-categories/{box['id']}/items",
+                        json={"inventory_ids": box_items}, headers=headers)
+        check("重复加入不会产生重复项",
+              r.status_code == 200 and len(r.json()["inventory_ids"]) == 3, r.text[:200])
+
+        # 移出：只解除归组，食材本身必须留在冰箱里
+        r = client.delete(f"/api/v1/food-categories/{box['id']}/items/{box_items[0]}",
+                          headers=headers)
+        check("移出一样食材", r.status_code == 200 and len(r.json()["inventory_ids"]) == 2,
+              r.text[:200])
+        r = client.get("/api/v1/inventory", headers=headers)
+        still_there = any(it["id"] == box_items[0] for it in r.json())
+        check("移出折叠箱后食材仍在冰箱里", still_there, "食材被误删了！")
+
+        # 改名
+        r = client.patch(f"/api/v1/food-categories/{box2_id}",
+                         json={"name": "这周要吃完"}, headers=headers)
+        check("改名成功", r.status_code == 200 and r.json()["name"] == "这周要吃完", r.text[:200])
+        r = client.patch(f"/api/v1/food-categories/{box2_id}",
+                         json={"name": "火锅材料"}, headers=headers)
+        check("改成别的箱子已有的名字被拒", r.status_code == 400, r.text[:200])
+
+        # 一件食材可以同时属于多个箱子（用户明确要的行为）
+        r = client.post(f"/api/v1/food-categories/{box2_id}/items",
+                        json={"inventory_ids": [box_items[1]]}, headers=headers)
+        check("同一件食材能进第二个箱子", r.status_code == 200, r.text[:200])
+        r = client.get("/api/v1/food-categories", headers=headers)
+        boxes = {b["id"]: b for b in r.json()}
+        check("两个箱子都包含牛肉",
+              box_items[1] in boxes[box["id"]]["inventory_ids"]
+              and box_items[1] in boxes[box2_id]["inventory_ids"], str(boxes)[:200])
+
+        # 删箱子不能删食材
+        r = client.delete(f"/api/v1/food-categories/{box2_id}", headers=headers)
+        check("删除折叠箱", r.status_code == 204, r.text[:200])
+        r = client.get("/api/v1/inventory", headers=headers)
+        check("删箱子后食材都还在",
+              all(any(it["id"] == i for it in r.json()) for i in box_items), "食材被误删了！")
+        r = client.get("/api/v1/food-categories", headers=headers)
+        check("删掉的箱子不在列表里", all(b["id"] != box2_id for b in r.json()))
+
+        # 删食材时关联要一起清掉。
+        # SQLite 默认不开外键约束，ON DELETE CASCADE 不生效，
+        # 所以代码里是手动清的 —— 这里就是钉这个行为。
+        r = client.delete(f"/api/v1/inventory/{box_items[1]}", headers=headers)
+        check("删除食材", r.status_code == 204, r.text[:200])
+        r = client.get("/api/v1/food-categories", headers=headers)
+        remaining = {b["id"]: b for b in r.json()}
+        check("删食材后折叠箱里不再残留它的 id",
+              box_items[1] not in remaining[box["id"]]["inventory_ids"],
+              str(remaining)[:200])
+
+        # 不存在 / 无权限的箱子要 404。
+        # 注意用 PATCH 而不是 GET —— 没有「查单个箱子」这个接口
+        #（列表接口已经返回了全部信息），GET /{id} 会落到 405。
+        r = client.patch("/api/v1/food-categories/999999",
+                         json={"name": "不存在的箱子"}, headers=headers)
+        check("不存在的箱子 404", r.status_code == 404, r.text[:200])
+        r = client.delete("/api/v1/food-categories/999999", headers=headers)
+        check("删不存在的箱子 404", r.status_code == 404, r.text[:200])
+
+        # 清理这一节建的箱子，别影响后面的用例
+        client.delete(f"/api/v1/food-categories/{box['id']}", headers=headers)
+
         print("\n=== 18. 清理 ===")
         r = client.delete("/api/v1/inventory", headers=headers)
         check("清空冰箱", r.status_code == 204, r.text[:200])
