@@ -191,7 +191,9 @@ fun FridgeScreen(viewModel: FridgeViewModel = hiltViewModel()) {
                         )
                     }
                 } else {
-                    state.boxGroups.forEach { group ->
+                    // 用 forEachIndexed：排序按钮要知道自己是不是第一个/最后一个，
+                    // 到头了就把「上移」「下移」显示成禁用
+                    state.boxGroups.forEachIndexed { index, group ->
                         // 从 group 反查回 FoodCategoryOut：group 里只有 id 和名字，
                         // 而对话框需要 inventoryIds 才能标出「哪些已经在箱子里」
                         val box = state.boxes.find { it.id == group.boxId }
@@ -205,6 +207,10 @@ fun FridgeScreen(viewModel: FridgeViewModel = hiltViewModel()) {
                             onAddItems = { box?.let { addingToBox = it } },
                             onRenameBox = { box?.let { renamingBox = it } },
                             onDeleteBox = { box?.let { deletingBox = it } },
+                            onMoveUp = { group.boxId?.let { viewModel.moveBox(it, -1) } },
+                            onMoveDown = { group.boxId?.let { viewModel.moveBox(it, +1) } },
+                            canMoveUp = index > 0,
+                            canMoveDown = index < state.boxGroups.lastIndex,
                         )
                     }
                 }
@@ -535,6 +541,10 @@ private fun LazyListScope.groupSection(
     onAddItems: (() -> Unit)? = null,
     onRenameBox: (() -> Unit)? = null,
     onDeleteBox: (() -> Unit)? = null,
+    onMoveUp: (() -> Unit)? = null,
+    onMoveDown: (() -> Unit)? = null,
+    canMoveUp: Boolean = true,
+    canMoveDown: Boolean = true,
 ) {
     item(key = "group-${group.key}") {
         SectionCard {
@@ -586,6 +596,25 @@ private fun LazyListScope.groupSection(
                                 expanded = menuOpen,
                                 onDismissRequest = { menuOpen = false },
                             ) {
+                                // 上移 / 下移。
+                                //
+                                // 到头了就**显示成禁用**，而不是藏起来 ——
+                                // 藏起来的话用户会以为「这个箱子不能排序」，
+                                // 而实际上是「已经是最上面了」。
+                                onMoveUp?.let { action ->
+                                    DropdownMenuItem(
+                                        text = { Text("上移") },
+                                        onClick = { menuOpen = false; action() },
+                                        enabled = canMoveUp,
+                                    )
+                                }
+                                onMoveDown?.let { action ->
+                                    DropdownMenuItem(
+                                        text = { Text("下移") },
+                                        onClick = { menuOpen = false; action() },
+                                        enabled = canMoveDown,
+                                    )
+                                }
                                 onAddItems?.let { action ->
                                     DropdownMenuItem(
                                         text = { Text("加食材") },

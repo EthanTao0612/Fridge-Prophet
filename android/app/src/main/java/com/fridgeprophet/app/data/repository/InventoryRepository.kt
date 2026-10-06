@@ -7,6 +7,7 @@ import com.fridgeprophet.app.data.remote.dto.AiStatus
 import com.fridgeprophet.app.data.remote.dto.ExpiringItem
 import com.fridgeprophet.app.data.remote.dto.FoodCategoryCreate
 import com.fridgeprophet.app.data.remote.dto.FoodCategoryItems
+import com.fridgeprophet.app.data.remote.dto.FoodCategoryOrder
 import com.fridgeprophet.app.data.remote.dto.FoodCategoryOut
 import com.fridgeprophet.app.data.remote.dto.FoodCategoryUpdate
 import com.fridgeprophet.app.data.remote.dto.InventoryCreate
@@ -80,6 +81,15 @@ class InventoryRepository @Inject constructor(private val api: FridgeApi) {
      */
     suspend fun removeFromCategory(id: Int, inventoryId: Int): ApiResult<FoodCategoryOut> =
         safeApiCall { api.removeFoodCategoryItem(id, inventoryId) }
+
+    /**
+     * 整批调整折叠箱顺序。
+     *
+     * 传**完整的期望顺序**（本地列表的顺序就是真相），
+     * 后端据此重新编号，是幂等的。
+     */
+    suspend fun reorderCategories(ids: List<Int>): ApiResult<List<FoodCategoryOut>> =
+        safeApiCall { api.reorderFoodCategories(FoodCategoryOrder(ids)) }
 
     /** 分类的显示顺序。失败时返回空列表，客户端按「其他」兜底排序。 */
     suspend fun categoryOrder(): ApiResult<List<String>> =

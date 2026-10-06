@@ -39,6 +39,7 @@ import com.fridgeprophet.app.data.remote.dto.FoodCategoryCreate
 import com.fridgeprophet.app.data.remote.dto.MaterializeRequest
 import com.fridgeprophet.app.data.remote.dto.RecommendResponse
 import com.fridgeprophet.app.data.remote.dto.FoodCategoryItems
+import com.fridgeprophet.app.data.remote.dto.FoodCategoryOrder
 import com.fridgeprophet.app.data.remote.dto.FoodCategoryOut
 import com.fridgeprophet.app.data.remote.dto.FoodCategoryUpdate
 import com.fridgeprophet.app.data.remote.dto.LoginRequest
@@ -137,6 +138,19 @@ interface FridgeApi {
 
     @DELETE("api/v1/food-categories/{id}")
     suspend fun deleteFoodCategory(@Path("id") id: Int)
+
+    /**
+     * 整批调整折叠箱顺序。
+     *
+     * ⚠️ 路径 `/order` 是**静态段**，必须放在 `/{id}` 那几条之前吗？
+     * 不需要 —— 它和 `/{id}` 的**方法不同**（PUT vs PATCH/DELETE），
+     * FastAPI 按「方法 + 路径」匹配，不会撞。
+     * 但如果以后有人加一条 `PUT /food-categories/{id}`，就要注意顺序了。
+     *
+     * 返回**完整**的折叠箱列表（含没参与排序的），客户端直接整体替换本地状态。
+     */
+    @PUT("api/v1/food-categories/order")
+    suspend fun reorderFoodCategories(@Body body: FoodCategoryOrder): List<FoodCategoryOut>
 
     @POST("api/v1/food-categories/{id}/items")
     suspend fun addFoodCategoryItems(

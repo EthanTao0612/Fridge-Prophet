@@ -290,6 +290,56 @@ class FridgeViewModel @Inject constructor(
         }
     }
 
+    /**
+     * 把折叠箱上移 / 下移一格。
+     *
+     * `delta` 传 -1（上移）或 +1（下移）。
+     *
+     * ## 为什么这里**可以**乐观更新，而新建/删除不行
+     *
+     * 上面三个操作（新建 / 重命名 / 删除）是**增删实体**：
+     * 乐观插一行假的箱子再撤掉，用户会看到列表闪一下，比等回包更糟。
+     *
+     * 排序不一样 —— 它是**纯顺序变化**，不增不删，
+     * 乐观更新只是把两行换个位置，视觉上是平滑的；
+     * 而等一次往返（生产库在孟买，约 169ms）再动，手感就是「点一下卡一下」。
+     *
+     * ## 为什么不用 boxBusy 挡连点
+     *
+     * 每次请求发的都是**完整的期望顺序**，所以是幂等的：
+     * 连点两次 = 连发两个完整顺序，**后到的那个赢**，
+     * 最终状态一定和本地显示一致。没有「两次请求各改一半」的问题。
+     * 挡连点反而会让快速连点丢操作。
+     *
+     * 失败才退回服务端的真实顺序（`load(silent = true)`）——
+     * 不能留着错的乐观结果，否则用户看到的顺序和库里不一致，
+     * 下次进来会「莫名其妙变回去」。
+     */
+    fun moveBox(boxId: Int, delta: Int) {
+        val boxes = _state.value.boxes
+        val from = boxes.indexOfFirst { it.id == boxId }
+        if (from < 0) return
+        val to = from + delta
+        if (to !in boxes.indices) return
+
+        val reordered = boxes.toMutableList().apply { add(to, removeAt(from)) }
+        _state.update { it.copy(boxes = reordered, error = null) }
+
+        viewModelScope.launch {
+            when (val r = repository.reorderCategories(reordered.map { it.id })) {
+                // 用服务端返回的完整列表覆盖 —— 它可能包含本地没有的箱子
+                //（家人刚建的），也能纠正任何本地偏差
+                is ApiResult.Success -> _state.update {
+                    it.copy(boxes = r.data, error = null)
+                }
+                is ApiResult.Failure -> {
+                    _state.update { it.copy(error = r.message) }
+                    load(silent = true)
+                }
+            }
+        }
+    }
+
     fun setLocationFilter(location: String?) {
         _state.update { it.copy(locationFilter = location) }
         load()

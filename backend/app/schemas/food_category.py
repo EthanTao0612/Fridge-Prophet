@@ -5,7 +5,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.models.food_category import NAME_MAX_LEN
+from app.models.food_category import MAX_CATEGORIES_PER_USER, NAME_MAX_LEN
 
 
 def _clean_name(v: str) -> str:
@@ -51,6 +51,21 @@ class FoodCategoryItemsIn(BaseModel):
     """
 
     inventory_ids: list[int] = Field(min_length=1, max_length=200)
+
+
+class FoodCategoryOrder(BaseModel):
+    """整批重排折叠箱。
+
+    ⚠️ 传的是**完整的、期望的顺序**，不是「把 A 挪到 B 前面」。
+
+    为什么不传「挪一格」：那要服务端先读一次当前顺序才能算出新顺序，
+    于是两次请求之间有窗口 —— 两个设备同时挪就会互相覆盖，
+    结果取决于谁先到。整批传完整顺序是**幂等**的：
+    不管服务端当前是什么顺序，执行完就是客户端看到的那个顺序。
+    少一次读，也没有竞态。
+    """
+
+    ids: list[int] = Field(min_length=1, max_length=MAX_CATEGORIES_PER_USER)
 
 
 class FoodCategoryOut(BaseModel):

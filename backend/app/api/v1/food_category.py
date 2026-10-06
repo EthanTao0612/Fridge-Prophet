@@ -18,6 +18,7 @@ from app.models.inventory import FoodInventory
 from app.schemas.food_category import (
     FoodCategoryCreate,
     FoodCategoryItemsIn,
+    FoodCategoryOrder,
     FoodCategoryOut,
     FoodCategoryUpdate,
 )
@@ -236,6 +237,68 @@ def delete_category(category_id: int, user: CurrentUser, db: DbSession) -> None:
     )
     db.delete(row)
     db.commit()
+
+
+@router.put("/order", response_model=list[FoodCategoryOut],
+            summary="整批调整折叠箱顺序")
+def reorder_categories(
+    payload: FoodCategoryOrder, user: CurrentUser, db: DbSession
+) -> list[FoodCategoryOut]:
+    """按给定的 id 顺序重排折叠箱。
+
+    ## 为什么是「整批传完整顺序」而不是「把某个挪一格」
+
+    「挪一格」要服务端先读一次当前顺序才能算出新顺序，
+    于是两次操作之间有窗口 —— 两个设备同时挪就会互相覆盖，
+    结果取决于谁先到。整批传完整顺序是**幂等**的：
+    不管服务端当前是什么顺序，执行完就是客户端看到的那个顺序。
+    少一次读，也没有竞态。
+
+    ## ⚠️ 不在列表里的箱子**不动它们**
+
+    客户端可能只拿到了一部分（分页、筛选、或本地状态没同步）。
+    如果按「传进来的才有效」把其余的 `sort_order` 一起重排，
+    它们会莫名其妙地跑到最前面或最后面。
+    所以只给传进来的那些按顺序编号，其余的保持原样。
+
+    ## 不可见的 id 静默跳过
+
+    和加食材同样的处理思路：客户端可能拿着一个刚被家人删掉的 id，
+    这时候整批失败太粗暴 —— 把还能排的排了，跳过失效的更合理。
+    但如果**一个都不剩**，那就是客户端拿错了数据，返回 400 说清楚。
+    """
+    _guard_write(db, user.id)
+
+    visible = set(
+        db.execute(
+            select(FoodCategory.id).where(
+                FoodCategory.user_id.in_(visible_user_ids(db, user.id))
+            )
+        ).scalars().all()
+    )
+
+    valid = [cid for cid in payload.ids if cid in visible]
+    if not valid:
+        raise HTTPException(
+            status_code=400,
+            detail="这些折叠箱都不在你的可见范围里，可能已经被删掉了。刷新一下看看。",
+        )
+
+    rows = db.execute(
+        select(FoodCategory).where(FoodCategory.id.in_(valid))
+    ).scalars().all()
+    by_id = {r.id: r for r in rows}
+    for index, category_id in enumerate(valid):
+        by_id[category_id].sort_order = index
+
+    db.commit()
+
+    # 返回**完整**列表（含没参与排序的那些）——
+    # 客户端要用它整体替换本地状态，少一次往返
+    return [
+        _to_out(row, member_ids)
+        for row, member_ids in _load_categories_with_members(db, user.id)
+    ]
 
 
 @router.post("/{category_id}/items", response_model=FoodCategoryOut,

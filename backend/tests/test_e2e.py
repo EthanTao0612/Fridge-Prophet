@@ -1405,6 +1405,56 @@ def main() -> int:
               box_items[1] in boxes[box["id"]]["inventory_ids"]
               and box_items[1] in boxes[box2_id]["inventory_ids"], str(boxes)[:200])
 
+        # ---- 整批调整顺序（PUT /food-categories/order）----
+        #
+        # ⚠️ 刻意用**三个**箱子测。两个箱子测不出「整批传完整顺序」的语义 ——
+        # 只挪一格时，「整批」和「交换两个值」的结果一模一样。
+        r = client.post("/api/v1/food-categories", json={"name": "第三个箱子"}, headers=headers)
+        check("建第三个箱子", r.status_code == 201, r.text[:200])
+        box3_id = r.json()["id"]
+
+        r = client.get("/api/v1/food-categories", headers=headers)
+        check("初始顺序就是创建顺序",
+              [b["id"] for b in r.json()] == [box["id"], box2_id, box3_id], r.text[:200])
+
+        # 把最后建的挪到最前面
+        new_order = [box3_id, box["id"], box2_id]
+        r = client.put("/api/v1/food-categories/order",
+                       json={"ids": new_order}, headers=headers)
+        check("整批重排返回 200", r.status_code == 200, r.text[:200])
+        check("返回的顺序就是请求的顺序",
+              [b["id"] for b in r.json()] == new_order, r.text[:200])
+        r = client.get("/api/v1/food-categories", headers=headers)
+        check("重新查询顺序保持（说明真的落库了）",
+              [b["id"] for b in r.json()] == new_order, r.text[:200])
+
+        # 幂等：同样的顺序再发一次，结果不变
+        r = client.put("/api/v1/food-categories/order",
+                       json={"ids": new_order}, headers=headers)
+        check("重复发同样的顺序，结果不变（幂等）",
+              r.status_code == 200 and [b["id"] for b in r.json()] == new_order, r.text[:200])
+
+        # 不可见的 id 静默跳过 —— 客户端可能拿着刚被家人删掉的 id 来排序
+        r = client.put("/api/v1/food-categories/order",
+                       json={"ids": [box3_id, 999999, box["id"]]}, headers=headers)
+        check("混了不可见的 id → 跳过它，其余照排", r.status_code == 200, r.text[:200])
+        r = client.get("/api/v1/food-categories", headers=headers)
+        after = [b["id"] for b in r.json()]
+        check("被跳过的 id 没有混进顺序里",
+              all(bid in (box["id"], box2_id, box3_id) for bid in after), str(after))
+
+        # 一个都不剩就说明客户端拿错了数据，这时候要明确报错而不是静默成功
+        r = client.put("/api/v1/food-categories/order", json={"ids": [999999]}, headers=headers)
+        check("全是不可见的 id → 400", r.status_code == 400, r.text[:200])
+
+        # 空列表在 schema 层就被拦掉（min_length=1），不会是 200
+        r = client.put("/api/v1/food-categories/order", json={"ids": []}, headers=headers)
+        check("空列表 → 422", r.status_code == 422, r.text[:200])
+
+        # 收拾：第三个箱子只是为这一节建的，后面的用例还在用前两个
+        r = client.delete(f"/api/v1/food-categories/{box3_id}", headers=headers)
+        check("删掉第三个箱子", r.status_code == 204, r.text[:200])
+
         # 删箱子不能删食材
         r = client.delete(f"/api/v1/food-categories/{box2_id}", headers=headers)
         check("删除折叠箱", r.status_code == 204, r.text[:200])

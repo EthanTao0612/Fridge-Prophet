@@ -841,6 +841,20 @@ data class FoodCategoryItems(
 )
 
 /**
+ * 「整批调整折叠箱顺序」的请求。
+ *
+ * ⚠️ 传的是**完整的、期望的顺序**，不是「把 A 挪到 B 前面」。
+ * 后端据此给每个箱子重新编号，是幂等的（见后端 `reorder_categories` 的说明）。
+ *
+ * 客户端这边有个额外好处：**不用知道服务端当前的 sort_order 是多少**。
+ * 本地列表的顺序就是真相，直接把它发上去。
+ */
+@Serializable
+data class FoodCategoryOrder(
+    val ids: List<Int>,
+)
+
+/**
  * 分类顺序的响应。
  *
  * 顺序（蔬菜在前、「其他」垫底）只在后端 `ingredient_category.CATEGORIES`
