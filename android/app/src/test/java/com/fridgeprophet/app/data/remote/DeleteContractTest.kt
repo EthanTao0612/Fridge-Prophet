@@ -75,7 +75,13 @@ class DeleteContractTest {
     }
 
     // ---------------------------------------------------------------
-    // 真实接口：五个 DELETE 都必须能吞下 204 空响应体
+    // 真实接口：六个 DELETE 都必须能吞下 204 空响应体
+    //
+    // ⚠️ 加新 DELETE 接口时**必须**在这里补一行。
+    // 漏掉的话不会有任何提示 —— 那个功能只在真机上「点了没反应」，
+    // 而这正是这个文件存在的理由。
+    //（`deleteFoodCategory` 就是补上来的：折叠箱的删除按钮接好之后
+    //   才发现这个文件里没有它。）
     // ---------------------------------------------------------------
 
     @Test
@@ -106,6 +112,35 @@ class DeleteContractTest {
     fun deleteShoppingList_acceptsEmptyBody() {
         enqueueNoContent()
         runBlocking { api.deleteShoppingList(1) }
+    }
+
+    /** 删除折叠箱。**不删食材**，只是解除归组（后端行为）。 */
+    @Test
+    fun deleteFoodCategory_acceptsEmptyBody() {
+        enqueueNoContent()
+        runBlocking { api.deleteFoodCategory(1) }
+    }
+
+    /**
+     * 把食材移出折叠箱。
+     *
+     * 注意它**不是 204** —— 后端返回的是更新后的箱子（200 + 箱子 JSON），
+     * 因为界面要立刻刷新「箱子里还剩什么」。
+     * 所以这里断言的是「能正常解析出箱子」，而不是「能吞下空响应体」。
+     */
+    @Test
+    fun removeFoodCategoryItem_returnsUpdatedBox() {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setHeader("Content-Type", "application/json")
+                .setBody(
+                    """{"id":1,"name":"火锅材料","sort_order":0,"inventory_ids":[7,9]}"""
+                )
+        )
+        val box = runBlocking { api.removeFoodCategoryItem(1, 8) }
+        assertEquals(1, box.id)
+        assertEquals(listOf(7, 9), box.inventoryIds)
     }
 
     @Test

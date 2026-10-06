@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyListScope
@@ -22,6 +23,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButton
@@ -37,6 +41,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -64,6 +69,16 @@ fun FridgeScreen(viewModel: FridgeViewModel = hiltViewModel()) {
     var showAddDialog by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<InventoryOut?>(null) }
     var deleting by remember { mutableStateOf<InventoryOut?>(null) }
+
+    // ---------- 折叠箱管理 ----------
+    //
+    // 四个对话框各自独立一个状态，而不是合成一个 sealed class。
+    // 理由：它们不会同时出现（都是模态的），合成一个反而要写一堆 when 分支，
+    // 每个分支还得处理「另一个字段是 null」的情况。
+    var showCreateBox by remember { mutableStateOf(false) }
+    var renamingBox by remember { mutableStateOf<FoodCategoryOut?>(null) }
+    var deletingBox by remember { mutableStateOf<FoodCategoryOut?>(null) }
+    var addingToBox by remember { mutableStateOf<FoodCategoryOut?>(null) }
 
     Column(modifier = Modifier.fillMaxSize()) {
         // ---------- 搜索 + 位置筛选 ----------
@@ -122,25 +137,64 @@ fun FridgeScreen(viewModel: FridgeViewModel = hiltViewModel()) {
 
         when {
             state.loading -> LoadingBox()
-            state.items.isEmpty() -> EmptyState(
+
+            // ⚠️ 这里的条件不能只判 items。
+            //
+            // 原来写的是 `state.items.isEmpty() -> EmptyState(...)`，
+            // 结果是：**只要列表为空，整个 LazyColumn 就不渲染** ——
+            // 于是「新建 / 管理折叠箱」的入口也跟着消失了。
+            // 两个会踩到的场景：
+            //   ① 搜索关键词没匹配到任何食材 → 想顺手改个箱子，发现入口没了
+            //   ② 冰箱真的空但已经建过箱子 → 连删都删不掉
+            //
+            // 所以加上 `&& state.boxes.isEmpty()`：只有「真空 + 没箱子」
+            // 才给整页空状态。其它情况都渲染列表，保证折叠箱始终可管理。
+            state.items.isEmpty() && state.boxes.isEmpty() -> EmptyState(
                 title = "这里还空着",
                 description = "去首页扫描一次冰箱，或者手动添加食材",
             )
+
             else -> LazyColumn(
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                // ① 自定义折叠箱放最上面 —— 用户自己建的，优先级最高
-                if (state.boxGroups.isNotEmpty()) {
-                    item {
+                // ① 折叠箱放最上面 —— 用户自己建的，优先级最高。
+                //
+                // **这一节永远显示**，即使一个箱子都没有：
+                // 否则用户第一次进来根本找不到「新建」的入口。
+                // 空的时候用一行说明代替列表，顺便教会用户折叠箱是干什么的。
+                item {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 4.dp, top = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
                         Text(
                             text = "我的折叠箱",
                             style = MaterialTheme.typography.labelLarge,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(start = 4.dp, top = 4.dp),
+                        )
+                        TextButton(onClick = { showCreateBox = true }) { Text("+ 新建") }
+                    }
+                }
+
+                if (state.boxGroups.isEmpty()) {
+                    item {
+                        Text(
+                            text = "折叠箱是你自己定的分组，比如「火锅材料」「早餐」。"
+                                + "和下面的「按分类」不冲突 —— 一样东西可以同时属于两边。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(start = 4.dp, bottom = 4.dp),
                         )
                     }
+                } else {
                     state.boxGroups.forEach { group ->
+                        // 从 group 反查回 FoodCategoryOut：group 里只有 id 和名字，
+                        // 而对话框需要 inventoryIds 才能标出「哪些已经在箱子里」
+                        val box = state.boxes.find { it.id == group.boxId }
                         groupSection(
                             group = group,
                             collapsed = group.key in state.collapsed,
@@ -148,6 +202,9 @@ fun FridgeScreen(viewModel: FridgeViewModel = hiltViewModel()) {
                             onEdit = { editing = it },
                             onDelete = { deleting = it },
                             onRemoveFromBox = { viewModel.removeFromBox(group.boxId!!, it.id) },
+                            onAddItems = { box?.let { addingToBox = it } },
+                            onRenameBox = { box?.let { renamingBox = it } },
+                            onDeleteBox = { box?.let { deletingBox = it } },
                         )
                     }
                 }
@@ -216,6 +273,247 @@ fun FridgeScreen(viewModel: FridgeViewModel = hiltViewModel()) {
             },
         )
     }
+
+    // ---------- 折叠箱：新建 / 重命名 / 删除 / 加食材 ----------
+
+    if (showCreateBox) {
+        BoxNameDialog(
+            title = "新建折叠箱",
+            hint = "比如「火锅材料」「早餐」「给猫的」—— 名字只有你自己看得到。",
+            initialName = "",
+            confirmText = "创建",
+            busy = state.boxBusy,
+            onConfirm = { name -> viewModel.createBox(name) { showCreateBox = false } },
+            onDismiss = { showCreateBox = false },
+        )
+    }
+
+    renamingBox?.let { box ->
+        BoxNameDialog(
+            title = "重命名折叠箱",
+            hint = null,
+            initialName = box.name,
+            confirmText = "保存",
+            busy = state.boxBusy,
+            onConfirm = { name -> viewModel.renameBox(box.id, name) { renamingBox = null } },
+            onDismiss = { renamingBox = null },
+        )
+    }
+
+    deletingBox?.let { box ->
+        AlertDialog(
+            onDismissRequest = { deletingBox = null },
+            title = { Text("删除折叠箱") },
+            // ⚠️ 必须写清「不删食材」。用户看到「删除」第一反应是
+            // 「箱子里的东西会不会一起没了」—— 不说清楚他就不敢点。
+            //
+            // 注意这里**不能**用 Markdown 的 ** 加粗：
+            // AlertDialog 的 text 是普通 Text，星号会原样显示出来。
+            text = {
+                Text(
+                    "确定删除「${box.name}」吗？\n\n"
+                        + "箱子里的 ${box.inventoryIds.size} 样食材不会被删掉，"
+                        + "只是不再归到这个箱子里 —— 它们还在冰箱里，也还在按分类里。"
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = { viewModel.deleteBox(box.id) { deletingBox = null } },
+                    enabled = !state.boxBusy,
+                ) {
+                    Text(
+                        if (state.boxBusy) "删除中…" else "删除箱子",
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deletingBox = null }) { Text("取消") }
+            },
+        )
+    }
+
+    addingToBox?.let { box ->
+        AddItemsToBoxDialog(
+            box = box,
+            items = state.items,
+            busy = state.boxBusy,
+            onConfirm = { ids -> viewModel.addToBox(box.id, ids) { addingToBox = null } },
+            onDismiss = { addingToBox = null },
+        )
+    }
+}
+
+/**
+ * 折叠箱的「起名 / 改名」对话框。
+ *
+ * 新建和重命名共用一个：两者只差标题、按钮文案和初始值，
+ * 分成两个函数会把「名字不能为空」「回车即确认」这些校验写两遍。
+ */
+@Composable
+private fun BoxNameDialog(
+    title: String,
+    hint: String?,
+    initialName: String,
+    confirmText: String,
+    busy: Boolean,
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var name by remember { mutableStateOf(initialName) }
+    val canSubmit = name.isNotBlank() && !busy
+
+    AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = { Text(title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("箱子名字") },
+                    singleLine = true,
+                    // 名字是给人看的短标签，不是备注。限长能防住
+                    // 「粘一大段文字进去」把标题行撑爆。
+                    isError = name.length > MAX_BOX_NAME,
+                    supportingText = {
+                        if (name.length > MAX_BOX_NAME) {
+                            Text("最多 ${MAX_BOX_NAME} 个字")
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                hint?.let {
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onConfirm(name.trim()) },
+                enabled = canSubmit && name.length <= MAX_BOX_NAME,
+            ) { Text(if (busy) "处理中…" else confirmText) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !busy) { Text("取消") }
+        },
+    )
+}
+
+/** 箱子名字的长度上限。和后端不强制，但界面得防住超长标题把布局撑坏。 */
+private const val MAX_BOX_NAME = 12
+
+/**
+ * 「往箱子里加食材」对话框。
+ *
+ * ## 为什么只加不减
+ *
+ * 移出食材走的是**食材行上的「移出」按钮**（已经做好了）。
+ * 这里不做「取消勾选 = 移出」，有两个原因：
+ *
+ * 1. 后端的移出接口是**单个**的（`DELETE /{id}/items/{itemId}`），
+ *    取消勾选 3 个就要连发 3 个请求，中间失败还会留下不一致的状态
+ * 2. 语义上更清楚 —— 「把东西放进箱子」和「把东西拿出来」
+ *    是两个不同的意图，放在同一个确认按钮里容易误操作
+ *
+ * 已经在箱子里的食材显示为**勾选且不可点**，这样用户能看清
+ * 「箱子里现在有什么」，而不是只看到一个待选清单。
+ */
+@Composable
+private fun AddItemsToBoxDialog(
+    box: FoodCategoryOut,
+    items: List<InventoryOut>,
+    busy: Boolean,
+    onConfirm: (List<Int>) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val alreadyIn = remember(box.id, box.inventoryIds) { box.inventoryIds.toSet() }
+    // 只记「这次新勾的」。已在箱子里的不算 —— 它们由 alreadyIn 表示，
+    // 混在一起提交虽然后端幂等能兜住，但按钮上的数字会虚高。
+    var picked by remember(box.id) { mutableStateOf(emptySet<Int>()) }
+
+    AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = { Text("往「${box.name}」里加食材") },
+        text = {
+            if (items.isEmpty()) {
+                Text("冰箱里还没有食材，先去添加或扫描一次。")
+            } else {
+                Column(
+                    // 限制高度，否则食材多了对话框会长到屏幕外，
+                    // 底下的确认按钮点不到
+                    modifier = Modifier
+                        .heightIn(max = 380.dp)
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    items.forEach { item ->
+                        val isIn = item.id in alreadyIn
+                        val checked = isIn || item.id in picked
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = !isIn && !busy) {
+                                    picked = if (item.id in picked) {
+                                        picked - item.id
+                                    } else {
+                                        picked + item.id
+                                    }
+                                }
+                                .padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Checkbox(
+                                checked = checked,
+                                // 已在箱子里的传 null onCheckedChange = 只读勾选框，
+                                // 避免用户以为点它能移出
+                                onCheckedChange = if (isIn) null else {
+                                    { picked = if (item.id in picked) picked - item.id else picked + item.id }
+                                },
+                                enabled = !isIn && !busy,
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = item.foodName,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                                Text(
+                                    text = if (isIn) {
+                                        "已在箱子里"
+                                    } else {
+                                        "${item.category} · ${formatQuantity(item.quantity, item.unit)}"
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onConfirm(picked.toList()) },
+                enabled = picked.isNotEmpty() && !busy,
+            ) {
+                Text(
+                    when {
+                        busy -> "加入中…"
+                        picked.isEmpty() -> "加入"
+                        else -> "加入 ${picked.size} 样"
+                    }
+                )
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !busy) { Text("取消") }
+        },
+    )
 }
 
 /**
@@ -234,6 +532,9 @@ private fun LazyListScope.groupSection(
     onEdit: (InventoryOut) -> Unit,
     onDelete: (InventoryOut) -> Unit,
     onRemoveFromBox: ((InventoryOut) -> Unit)? = null,
+    onAddItems: (() -> Unit)? = null,
+    onRenameBox: (() -> Unit)? = null,
+    onDeleteBox: (() -> Unit)? = null,
 ) {
     item(key = "group-${group.key}") {
         SectionCard {
@@ -267,6 +568,46 @@ private fun LazyListScope.groupSection(
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.primary,
                         )
+                    }
+
+                    // 折叠箱的管理入口。
+                    //
+                    // 放在**标题行内**而不是做成整页的「管理」页面：
+                    // 用户想改的是「这个箱子」，动作应该就在这个箱子旁边。
+                    // 而且标题行本来就点一下展开/收起，
+                    // 加一个独立的「⋯」按钮比长按更好发现（长按没有任何视觉提示）。
+                    if (onAddItems != null || onRenameBox != null || onDeleteBox != null) {
+                        Box {
+                            var menuOpen by remember { mutableStateOf(false) }
+                            IconButton(onClick = { menuOpen = true }) {
+                                Text("⋯", style = MaterialTheme.typography.titleMedium)
+                            }
+                            DropdownMenu(
+                                expanded = menuOpen,
+                                onDismissRequest = { menuOpen = false },
+                            ) {
+                                onAddItems?.let { action ->
+                                    DropdownMenuItem(
+                                        text = { Text("加食材") },
+                                        onClick = { menuOpen = false; action() },
+                                    )
+                                }
+                                onRenameBox?.let { action ->
+                                    DropdownMenuItem(
+                                        text = { Text("重命名") },
+                                        onClick = { menuOpen = false; action() },
+                                    )
+                                }
+                                onDeleteBox?.let { action ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text("删除箱子", color = MaterialTheme.colorScheme.error)
+                                        },
+                                        onClick = { menuOpen = false; action() },
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -340,22 +681,58 @@ private fun FridgeItemRow(
             if (onRemoveFromBox != null) {
                 // 在折叠箱里给的是「移出」而不是「删除」——
                 // 用户想的是「这东西不放这个箱子里了」，不是「我把它扔了」
-                IconButton(onClick = onRemoveFromBox) {
-                    Text("移出", style = MaterialTheme.typography.labelMedium)
-                }
+                RowAction("移出", MaterialTheme.colorScheme.primary, onRemoveFromBox)
             }
-            IconButton(onClick = onEdit) {
-                Text("改", style = MaterialTheme.typography.labelLarge)
-            }
-            IconButton(onClick = onDelete) {
-                Text(
-                    "删",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.error,
-                )
-            }
+            RowAction("改", MaterialTheme.colorScheme.onSurfaceVariant, onEdit)
+            RowAction("删", MaterialTheme.colorScheme.error, onDelete)
         }
     }
+}
+
+/**
+ * 食材行右侧的小动作按钮。
+ *
+ * ## 为什么不用 `IconButton`
+ *
+ * `IconButton` 有 **48dp 的最小尺寸**（Material 的可点区域规范）。
+ * 折叠箱里一行有三个动作（移出 / 改 / 删），就是 144dp ——
+ * 加上 52dp 的图和右边那枚新鲜度标签，**食材名那一列只剩不到 40dp**。
+ *
+ * 实测后果（真机截图）：折叠箱里的一行被折成五行 ——
+ *
+ *     红椒
+ *     冷藏 · 3
+ *     个
+ *     2026-10-1
+ *     1 · 还剩 5
+ *     天
+ *
+ * 这不是「挤一点」，是看起来坏了。
+ *
+ * ## 取舍
+ *
+ * 这里手动给一个紧凑的点击区域：横向 6dp、纵向 12dp。
+ * 高度约 44dp（接近 48dp 的建议值，手指够点），
+ * 宽度按文字自适应 —— 「移出」约 40dp、「改」约 26dp，三个合计约 92dp，
+ * 比原来省下 50dp 左右，食材名那一列回到 90dp 以上。
+ *
+ * ⚠️ **不要再改回 IconButton**，除非同时改掉「一行三个动作」这个布局。
+ */
+@Composable
+private fun RowAction(
+    text: String,
+    color: Color,
+    onClick: () -> Unit,
+) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelLarge,
+        color = color,
+        modifier = Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 6.dp, vertical = 12.dp),
+    )
 }
 
 

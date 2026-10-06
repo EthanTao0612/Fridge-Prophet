@@ -46,6 +46,15 @@ data class FridgeUiState(
     val keyword: String = "",
     val error: String? = null,
     val busy: Boolean = false,
+    /**
+     * 折叠箱的增删改正在请求中。
+     *
+     * 为什么不复用 `busy`：`busy` 是「食材」那一套操作（改数量、删食材）用的，
+     * 两者会同时发生（用户在箱子里删食材、同时又在改名）。
+     * 共用一个标志会让互不相关的按钮一起变灰 —— 和铁律 13 里
+     * 「全局 busy 导致同卡开关一起闪烁」是同一类问题。
+     */
+    val boxBusy: Boolean = false,
 ) {
     /** 按分类分好组的食材。顺序跟 `categoryOrder`，空分类不显示。 */
     val groups: List<FridgeGroup>
@@ -156,28 +165,59 @@ class FridgeViewModel @Inject constructor(
     }
 
     // ---------- 自定义折叠箱 ----------
+    //
+    // ## 为什么都带一个 onSuccess 回调
+    //
+    // 这三个操作都是**从对话框里发起**的。对话框要不要关，取决于服务端认不认 ——
+    // 「新建一个重名的箱子」后端会返回 400，这时把对话框关掉、
+    // 只在页面顶部留一行红字，用户会以为操作成功了。
+    // 所以：成功才关（回调），失败不关（对话框留着让用户改名重试），
+    // 错误信息走 `state.error` 显示在页面上。
+    //
+    // ## 为什么用 boxBusy 而不是乐观更新
+    //
+    // 铁律 13 说开关类设置要乐观更新 —— 但那是**单个布尔值**的场景
+    //（勾了就变，失败再回滚，回滚也不突兀）。
+    // 这里是「新建/删除一个实体」，乐观插入一行假的箱子再撤掉，
+    // 用户会看到列表闪一下。老老实实等回包 + 转圈更稳。
 
-    fun createBox(name: String) {
-        if (name.isBlank()) return
+    fun createBox(name: String, onSuccess: () -> Unit = {}) {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty() || _state.value.boxBusy) return
+        _state.update { it.copy(boxBusy = true, error = null) }
         viewModelScope.launch {
-            when (val r = repository.createCategory(name.trim())) {
+            when (val r = repository.createCategory(trimmed)) {
                 is ApiResult.Success -> {
-                    _state.update { it.copy(boxes = it.boxes + r.data, error = null) }
-                    // 新建的箱子默认展开，用户能立刻看到自己刚建的东西
+                    // 追加到末尾，和后端 `order_by(sort_order, id)` 的顺序一致
+                    _state.update {
+                        it.copy(boxes = it.boxes + r.data, boxBusy = false, error = null)
+                    }
+                    onSuccess()
                 }
-                is ApiResult.Failure -> _state.update { it.copy(error = r.message) }
+                is ApiResult.Failure ->
+                    _state.update { it.copy(boxBusy = false, error = r.message) }
             }
         }
     }
 
-    fun renameBox(id: Int, name: String) {
-        if (name.isBlank()) return
+    fun renameBox(id: Int, name: String, onSuccess: () -> Unit = {}) {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty() || _state.value.boxBusy) return
+        _state.update { it.copy(boxBusy = true, error = null) }
         viewModelScope.launch {
-            when (val r = repository.renameCategory(id, name.trim())) {
-                is ApiResult.Success -> _state.update { st ->
-                    st.copy(boxes = st.boxes.map { if (it.id == id) r.data else it }, error = null)
+            when (val r = repository.renameCategory(id, trimmed)) {
+                is ApiResult.Success -> {
+                    _state.update { st ->
+                        st.copy(
+                            boxes = st.boxes.map { if (it.id == id) r.data else it },
+                            boxBusy = false,
+                            error = null,
+                        )
+                    }
+                    onSuccess()
                 }
-                is ApiResult.Failure -> _state.update { it.copy(error = r.message) }
+                is ApiResult.Failure ->
+                    _state.update { it.copy(boxBusy = false, error = r.message) }
             }
         }
     }
@@ -187,30 +227,53 @@ class FridgeViewModel @Inject constructor(
      *
      * ⚠️ **不删食材** —— 后端只解除归组，食材留在冰箱里。
      * 客户端这边同理：只把箱子从列表里去掉，不动 items。
+     * 界面上必须把这一点说清楚（确认框里写了），否则用户不敢点。
      */
-    fun deleteBox(id: Int) {
+    fun deleteBox(id: Int, onSuccess: () -> Unit = {}) {
+        if (_state.value.boxBusy) return
+        _state.update { it.copy(boxBusy = true, error = null) }
         viewModelScope.launch {
             when (val r = repository.deleteCategory(id)) {
-                is ApiResult.Success -> _state.update { st ->
-                    st.copy(
-                        boxes = st.boxes.filter { it.id != id },
-                        collapsed = st.collapsed - "box:$id",
-                        error = null,
-                    )
+                is ApiResult.Success -> {
+                    _state.update { st ->
+                        st.copy(
+                            boxes = st.boxes.filter { it.id != id },
+                            collapsed = st.collapsed - "box:$id",
+                            boxBusy = false,
+                            error = null,
+                        )
+                    }
+                    onSuccess()
                 }
-                is ApiResult.Failure -> _state.update { it.copy(error = r.message) }
+                is ApiResult.Failure ->
+                    _state.update { it.copy(boxBusy = false, error = r.message) }
             }
         }
     }
 
-    fun addToBox(boxId: Int, inventoryIds: List<Int>) {
-        if (inventoryIds.isEmpty()) return
+    /**
+     * 把一批食材加进折叠箱。
+     *
+     * 后端**幂等**（已在箱子里的会被跳过），所以这里不用先算差集 ——
+     * 客户端算差集反而容易和「家人同时也在加」产生竞态。
+     */
+    fun addToBox(boxId: Int, inventoryIds: List<Int>, onSuccess: () -> Unit = {}) {
+        if (inventoryIds.isEmpty() || _state.value.boxBusy) return
+        _state.update { it.copy(boxBusy = true, error = null) }
         viewModelScope.launch {
             when (val r = repository.addToCategory(boxId, inventoryIds)) {
-                is ApiResult.Success -> _state.update { st ->
-                    st.copy(boxes = st.boxes.map { if (it.id == boxId) r.data else it }, error = null)
+                is ApiResult.Success -> {
+                    _state.update { st ->
+                        st.copy(
+                            boxes = st.boxes.map { if (it.id == boxId) r.data else it },
+                            boxBusy = false,
+                            error = null,
+                        )
+                    }
+                    onSuccess()
                 }
-                is ApiResult.Failure -> _state.update { it.copy(error = r.message) }
+                is ApiResult.Failure ->
+                    _state.update { it.copy(boxBusy = false, error = r.message) }
             }
         }
     }
