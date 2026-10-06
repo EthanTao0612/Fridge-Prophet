@@ -75,6 +75,8 @@ fun ScanScreen(
                 aiEnabled = state.aiEnabled,
                 hint = state.message,
                 error = state.error,
+                quotaLeft = state.quotaLeft,
+                quotaLow = state.quotaLow,
                 onImageReady = viewModel::analyze,
                 onDismissError = viewModel::clearError,
             )
@@ -138,12 +140,18 @@ private fun CameraPhase(
     aiEnabled: Boolean,
     hint: String,
     error: String?,
+    quotaLeft: Int,
+    quotaLow: Boolean,
     onImageReady: (File) -> Unit,
     onDismissError: () -> Unit,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
+    // 额度**确实**用完了（-1 = 还不知道，不算用完）。
+    // 用完就把拍照/相册都禁用 —— 让用户按下去再弹一个 429 错误，
+    // 比一开始就告诉他「今天不能用了」体验差得多。
+    val quotaExhausted = quotaLeft == 0
     var hasPermission by remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
@@ -258,6 +266,36 @@ private fun CameraPhase(
                     )
                 }
             }
+            // 今日剩余 AI 额度。
+            //
+            // 为什么要在拍照前就显示：识别是要花额度的（后端按天限流），
+            // 用户被 429 拦下来时才第一次知道有「额度」这回事，
+            // 会觉得「昨天还好好的，怎么突然不行了」。
+            //
+            // `quotaLeft < 0` 表示还没拿到状态（接口失败/后端版本旧），
+            // 这时候**什么都不显示** —— 显示「还剩 -1 次」比不显示更糟。
+            if (aiEnabled && quotaLeft >= 0) {
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(
+                            if (quotaExhausted) Color(0xCC7A2E2E) else Color(0x99000000)
+                        )
+                        .padding(10.dp),
+                ) {
+                    Text(
+                        text = when {
+                            quotaExhausted ->
+                                "今天的 AI 识别额度用完了，明天恢复。\n" +
+                                    "现在仍然可以手动添加食材，或者看看「推荐」菜谱。"
+                            quotaLow -> "今日 AI 识别还剩 $quotaLeft 次，省着用"
+                            else -> "今日 AI 识别还剩 $quotaLeft 次"
+                        },
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Color.White,
+                    )
+                }
+            }
             if (hint.isNotBlank() && aiEnabled) {
                 Box(
                     modifier = Modifier
@@ -306,8 +344,12 @@ private fun CameraPhase(
                 horizontalArrangement = Arrangement.spacedBy(28.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                OutlinedButton(onClick = { galleryLauncher.launch("image/*") }) {
-                    Text("相册", color = Color.White)
+                OutlinedButton(
+                    onClick = { galleryLauncher.launch("image/*") },
+                    // 额度用完就别让他选了 —— 选完照样会被后端拦下
+                    enabled = !quotaExhausted,
+                ) {
+                    Text("相册", color = if (quotaExhausted) Color(0x66FFFFFF) else Color.White)
                 }
 
                 // 快门
@@ -315,8 +357,8 @@ private fun CameraPhase(
                     modifier = Modifier
                         .size(72.dp)
                         .clip(CircleShape)
-                        .background(Color.White)
-                        .clickable(enabled = imageCapture != null) {
+                        .background(if (quotaExhausted) Color(0x66FFFFFF) else Color.White)
+                        .clickable(enabled = imageCapture != null && !quotaExhausted) {
                             val capture = imageCapture ?: return@clickable
                             val file = File(context.cacheDir, "scan_${System.currentTimeMillis()}.jpg")
                             val options = ImageCapture.OutputFileOptions.Builder(file).build()

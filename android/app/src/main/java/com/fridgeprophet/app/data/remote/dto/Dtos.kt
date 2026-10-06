@@ -422,6 +422,16 @@ data class AiStatus(
     @SerialName("text_model") val textModel: String = "mock",
     val storage: String = "local",
     val note: String = "",
+    /**
+     * 今天还剩几次 AI 调用（拍照识别 + 生成菜谱合计）。
+     *
+     * `-1` 表示**还不知道**（状态接口没拿到 / 后端版本旧）。
+     * 用 -1 而不是 0 当默认值很重要：0 会被界面当成「额度用完了」，
+     * 于是接口一失败就把按钮全灰掉 —— 那是把网络问题显示成了额度问题。
+     */
+    @SerialName("ai_quota_left") val aiQuotaLeft: Int = -1,
+    /** 后端算好的「快用完了」（≤3 次）。界面据此把数字标黄。 */
+    @SerialName("ai_quota_low") val aiQuotaLow: Boolean = false,
 )
 
 // ---------- 菜谱 ----------

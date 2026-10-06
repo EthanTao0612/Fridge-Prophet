@@ -63,10 +63,22 @@ data class ScanUiState(
     val modelName: String = "",
     val message: String = "",
     val aiEnabled: Boolean = true,
+    /**
+     * 今天还剩几次 AI 调用。`-1` = 还不知道（状态接口没拿到）。
+     *
+     * ⚠️ 默认值必须是 -1 而不是 0：0 会让界面以为「额度用完了」，
+     * 于是接口一失败就把拍照按钮灰掉 —— 把网络问题显示成额度问题，
+     * 用户会以为今天不能用了。
+     */
+    val quotaLeft: Int = -1,
+    val quotaLow: Boolean = false,
     val error: String? = null,
     val confirming: Boolean = false,
     val confirmedCount: Int = 0,
-)
+) {
+    /** 额度确实用完了（而不是「还不知道」）。界面据此禁用拍照。 */
+    val quotaExhausted: Boolean get() = quotaLeft == 0
+}
 
 @HiltViewModel
 class ScanViewModel @Inject constructor(
@@ -80,9 +92,38 @@ class ScanViewModel @Inject constructor(
     init {
         viewModelScope.launch {
             when (val result = repository.aiStatus()) {
-                is ApiResult.Success ->
-                    _state.update { it.copy(aiEnabled = result.data.aiEnabled, message = result.data.note) }
-                is ApiResult.Failure -> Unit // 状态接口失败不影响使用
+                is ApiResult.Success -> _state.update {
+                    it.copy(
+                        aiEnabled = result.data.aiEnabled,
+                        message = result.data.note,
+                        quotaLeft = result.data.aiQuotaLeft,
+                        quotaLow = result.data.aiQuotaLow,
+                    )
+                }
+                // 状态接口失败不影响使用 —— 配额保持 -1（「还不知道」），
+                // 界面就不会误判成「额度用完」
+                is ApiResult.Failure -> Unit
+            }
+        }
+    }
+
+    /**
+     * 重新拉一次状态。
+     *
+     * 用在**识别完之后** —— 刚花掉一次额度，屏幕上的「还剩 N 次」得跟着变，
+     * 否则用户会以为额度没动。不做成实时轮询：额度一天才变几十次，
+     * 每次识别后刷一次足够了。
+     */
+    fun refreshStatus() {
+        viewModelScope.launch {
+            when (val result = repository.aiStatus()) {
+                is ApiResult.Success -> _state.update {
+                    it.copy(
+                        quotaLeft = result.data.aiQuotaLeft,
+                        quotaLow = result.data.aiQuotaLow,
+                    )
+                }
+                is ApiResult.Failure -> Unit
             }
         }
     }
@@ -117,6 +158,8 @@ class ScanViewModel @Inject constructor(
                             error = if (scan.foods.isEmpty()) "没有识别到食材，换一张更清晰的照片试试" else null,
                         )
                     }
+                    // 刚花掉一次额度，把「还剩 N 次」刷成新的
+                    refreshStatus()
                 }
                 is ApiResult.Failure ->
                     _state.update { it.copy(phase = ScanPhase.CAMERA, error = result.message) }
