@@ -80,4 +80,8 @@ class InventoryRepository @Inject constructor(private val api: FridgeApi) {
      */
     suspend fun removeFromCategory(id: Int, inventoryId: Int): ApiResult<FoodCategoryOut> =
         safeApiCall { api.removeFoodCategoryItem(id, inventoryId) }
+
+    /** 分类的显示顺序。失败时返回空列表，客户端按「其他」兜底排序。 */
+    suspend fun categoryOrder(): ApiResult<List<String>> =
+        safeApiCall { api.inventoryCategories().categories.map { it.name } }
 }

@@ -8,11 +8,14 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -39,6 +42,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.fridgeprophet.app.data.remote.dto.FoodCategoryOut
 import com.fridgeprophet.app.data.remote.dto.InventoryOut
 import com.fridgeprophet.app.ui.components.DateField
 import com.fridgeprophet.app.ui.components.EmptyState
@@ -126,60 +130,49 @@ fun FridgeScreen(viewModel: FridgeViewModel = hiltViewModel()) {
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                items(state.items, key = { it.id }) { item ->
-                    SectionCard {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            FoodImage(
-                                imageUrl = item.imageUrl,
-                                name = item.foodName,
-                                modifier = Modifier
-                                    .size(58.dp)
-                                    .clip(RoundedCornerShape(16.dp)),
-                            )
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = item.foodName,
-                                    style = MaterialTheme.typography.titleMedium,
-                                )
-                                Text(
-                                    text = buildString {
-                                        append(item.storageLocation)
-                                        append(" · ")
-                                        append(formatQuantity(item.quantity, item.unit))
-                                        if (item.category != "其他") {
-                                            append(" · ")
-                                            append(item.category)
-                                        }
-                                    },
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                                Text(
-                                    text = expiryLine(item.daysLeft, item.expiryDate),
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = SemanticColors.forFreshness(item.freshness),
-                                )
-                            }
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                FreshnessPill(item.freshness)
-                                IconButton(onClick = { editing = item }) {
-                                    Text("改", style = MaterialTheme.typography.labelLarge)
-                                }
-                                IconButton(onClick = { deleting = item }) {
-                                    Text(
-                                        "删",
-                                        style = MaterialTheme.typography.labelLarge,
-                                        color = MaterialTheme.colorScheme.error,
-                                    )
-                                }
-                            }
-                        }
+                // ① 自定义折叠箱放最上面 —— 用户自己建的，优先级最高
+                if (state.boxGroups.isNotEmpty()) {
+                    item {
+                        Text(
+                            text = "我的折叠箱",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(start = 4.dp, top = 4.dp),
+                        )
+                    }
+                    state.boxGroups.forEach { group ->
+                        groupSection(
+                            group = group,
+                            collapsed = group.key in state.collapsed,
+                            onToggle = { viewModel.toggleCollapse(group.key) },
+                            onEdit = { editing = it },
+                            onDelete = { deleting = it },
+                            onRemoveFromBox = { viewModel.removeFromBox(group.boxId!!, it.id) },
+                        )
                     }
                 }
+
+                // ② 默认分类
+                if (state.groups.isNotEmpty()) {
+                    item {
+                        Text(
+                            text = "按分类",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(start = 4.dp, top = 8.dp),
+                        )
+                    }
+                    state.groups.forEach { group ->
+                        groupSection(
+                            group = group,
+                            collapsed = group.key in state.collapsed,
+                            onToggle = { viewModel.toggleCollapse(group.key) },
+                            onEdit = { editing = it },
+                            onDelete = { deleting = it },
+                        )
+                    }
+                }
+
                 item { Box(Modifier.height(24.dp)) }
             }
         }
@@ -224,6 +217,147 @@ fun FridgeScreen(viewModel: FridgeViewModel = hiltViewModel()) {
         )
     }
 }
+
+/**
+ * 一个分组：标题行 + 成员列表。
+ *
+ * 整组放在**一张卡片**里，而不是每样食材一张卡 ——
+ * 否则「分组」在视觉上体现不出来，看起来还是平铺列表。
+ */
+// ⚠️ 这个函数**不能**标 @Composable —— LazyListScope 的扩展函数是
+// 在 LazyColumn 的 content lambda（非 composable 上下文）里调用的。
+// 真正需要 composable 上下文的是 item {} 的 lambda，它自己带。
+private fun LazyListScope.groupSection(
+    group: FridgeGroup,
+    collapsed: Boolean,
+    onToggle: () -> Unit,
+    onEdit: (InventoryOut) -> Unit,
+    onDelete: (InventoryOut) -> Unit,
+    onRemoveFromBox: ((InventoryOut) -> Unit)? = null,
+) {
+    item(key = "group-${group.key}") {
+        SectionCard {
+            Column {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(onClick = onToggle),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = if (collapsed) "▸" else "▾",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        text = group.title,
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        text = "${group.items.size} 样",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (group.boxId != null) {
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = "自定义",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                }
+
+                // 空箱子也要显示 —— 用户刚建完就看到它消失会以为没建成
+                if (!collapsed && group.items.isEmpty()) {
+                    Text(
+                        text = "还没有放东西进来",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 8.dp, start = 22.dp),
+                    )
+                }
+
+                if (!collapsed) {
+                    group.items.forEach { item ->
+                        HorizontalDivider(
+                            modifier = Modifier.padding(vertical = 8.dp),
+                            color = MaterialTheme.colorScheme.outlineVariant,
+                        )
+                        FridgeItemRow(
+                            item = item,
+                            onEdit = { onEdit(item) },
+                            onDelete = { onDelete(item) },
+                            onRemoveFromBox = onRemoveFromBox?.let { f -> { f(item) } },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** 单样食材那一行。分组和折叠箱共用，所以抽出来。 */
+@Composable
+private fun FridgeItemRow(
+    item: InventoryOut,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
+    onRemoveFromBox: (() -> Unit)? = null,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        FoodImage(
+            imageUrl = item.imageUrl,
+            name = item.foodName,
+            modifier = Modifier
+                .size(52.dp)
+                .clip(RoundedCornerShape(14.dp)),
+        )
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = item.foodName,
+                style = MaterialTheme.typography.titleMedium,
+            )
+            Text(
+                text = "${item.storageLocation} · ${formatQuantity(item.quantity, item.unit)}",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = expiryLine(item.daysLeft, item.expiryDate),
+                style = MaterialTheme.typography.labelMedium,
+                color = SemanticColors.forFreshness(item.freshness),
+            )
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            FreshnessPill(item.freshness)
+            if (onRemoveFromBox != null) {
+                // 在折叠箱里给的是「移出」而不是「删除」——
+                // 用户想的是「这东西不放这个箱子里了」，不是「我把它扔了」
+                IconButton(onClick = onRemoveFromBox) {
+                    Text("移出", style = MaterialTheme.typography.labelMedium)
+                }
+            }
+            IconButton(onClick = onEdit) {
+                Text("改", style = MaterialTheme.typography.labelLarge)
+            }
+            IconButton(onClick = onDelete) {
+                Text(
+                    "删",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+        }
+    }
+}
+
 
 private fun expiryLine(daysLeft: Int?, expiryDate: String?): String {
     if (expiryDate == null) return "无保质期信息"

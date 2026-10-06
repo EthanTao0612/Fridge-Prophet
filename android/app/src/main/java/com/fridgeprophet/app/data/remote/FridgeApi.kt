@@ -34,6 +34,7 @@ import com.fridgeprophet.app.data.remote.dto.InventoryCreate
 import com.fridgeprophet.app.data.remote.dto.InventoryOut
 import com.fridgeprophet.app.data.remote.dto.InventoryStats
 import com.fridgeprophet.app.data.remote.dto.InventoryUpdate
+import com.fridgeprophet.app.data.remote.dto.CategoryListResponse
 import com.fridgeprophet.app.data.remote.dto.FoodCategoryCreate
 import com.fridgeprophet.app.data.remote.dto.FoodCategoryItems
 import com.fridgeprophet.app.data.remote.dto.FoodCategoryOut
@@ -232,6 +233,10 @@ interface FridgeApi {
         @Query("category") category: String? = null,
         @Query("keyword") keyword: String? = null,
     ): List<InventoryOut>
+
+    /** 食材分类的显示顺序（由后端定义，客户端不要自己写一份） */
+    @GET("api/v1/inventory/categories")
+    suspend fun inventoryCategories(): CategoryListResponse
 
     @GET("api/v1/inventory/expiring")
     suspend fun listExpiring(@Query("within_days") withinDays: Int = 3): List<ExpiringItem>

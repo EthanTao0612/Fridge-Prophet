@@ -839,3 +839,20 @@ data class FoodCategoryUpdate(
 data class FoodCategoryItems(
     @SerialName("inventory_ids") val inventoryIds: List<Int>,
 )
+
+/**
+ * 分类顺序的响应。
+ *
+ * 顺序（蔬菜在前、「其他」垫底）只在后端 `ingredient_category.CATEGORIES`
+ * 里定义一次，客户端通过这个接口拿 —— 自己写一份迟早会不一致。
+ */
+@Serializable
+data class CategoryCount(
+    val name: String,
+    val count: Int = 0,
+)
+
+@Serializable
+data class CategoryListResponse(
+    val categories: List<CategoryCount> = emptyList(),
+)
