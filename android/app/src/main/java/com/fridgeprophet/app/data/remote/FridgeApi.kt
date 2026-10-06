@@ -36,6 +36,7 @@ import com.fridgeprophet.app.data.remote.dto.InventoryStats
 import com.fridgeprophet.app.data.remote.dto.InventoryUpdate
 import com.fridgeprophet.app.data.remote.dto.CategoryListResponse
 import com.fridgeprophet.app.data.remote.dto.FoodCategoryCreate
+import com.fridgeprophet.app.data.remote.dto.MaterializeRequest
 import com.fridgeprophet.app.data.remote.dto.RecommendResponse
 import com.fridgeprophet.app.data.remote.dto.FoodCategoryItems
 import com.fridgeprophet.app.data.remote.dto.FoodCategoryOut
@@ -284,6 +285,10 @@ interface FridgeApi {
         @Query("limit") limit: Int = 30,
         @Query("category") category: String? = null,
     ): RecommendResponse
+
+    /** 照着菜品库里的某道菜生成详细做法（含步骤）。幂等：已生成过会直接返回。 */
+    @POST("api/v1/recipes/materialize")
+    suspend fun materializeRecipe(@Body body: MaterializeRequest): RecipeOut
 
     @GET("api/v1/recipes/{id}")
     suspend fun getRecipe(@Path("id") id: Int): RecipeOut

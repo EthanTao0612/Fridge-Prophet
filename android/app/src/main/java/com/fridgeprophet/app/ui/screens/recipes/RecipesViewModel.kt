@@ -23,6 +23,8 @@ data class RecipesUiState(
     val recommendations: List<DishRecommendation> = emptyList(),
     val readyCount: Int = 0,
     val loadingRecommend: Boolean = false,
+    /** 正在「落实」成详细做法的那道推荐菜（菜名）。null = 没有在生成。 */
+    val materializing: String? = null,
     val generating: Boolean = false,
     val error: String? = null,
     val info: String? = null,
@@ -113,6 +115,44 @@ class RecipesViewModel @Inject constructor(
                 }
                 is ApiResult.Failure ->
                     _state.update { it.copy(generating = false, error = result.message) }
+            }
+        }
+    }
+
+    /**
+     * 点开一道推荐菜 → 生成它的详细做法，成功后跳到详情页。
+     *
+     * ## 为什么不预先给 192 道菜都生成步骤
+     *
+     * 那要跑 192 次 AI 调用（慢且贵），而用户实际只会点开其中几道。
+     * 改成按需生成，后端还做了**幂等** —— 同一道菜反复点只会调一次 AI。
+     *
+     * ## 为什么一次只允许生成一道
+     *
+     * `materializing` 是单值。用户在生成期间点别的卡片，说明他改主意了，
+     * 但此刻放行就会并发打两次 AI：既慢，又容易撞上后端限流，
+     * 最后两道都失败。所以生成期间直接忽略后续点击（卡片会转圈，
+     * 用户看得见「正在忙」）。
+     */
+    fun materialize(dish: DishRecommendation, onReady: (Int) -> Unit) {
+        if (_state.value.materializing != null) return
+        _state.update { it.copy(materializing = dish.name, error = null, info = null) }
+
+        viewModelScope.launch {
+            when (val result = repository.materialize(dish.name)) {
+                is ApiResult.Success -> {
+                    val recipe = result.data
+                    _state.update { s ->
+                        // 顺手把新生成的菜插进本地列表。
+                        // 不这么做的话，用户从详情页返回时「全部」标签里还是旧的，
+                        // 得再跑一次网络请求才看得到 —— 那是一次白等的等待。
+                        val rest = s.recipes.filterNot { it.id == recipe.id }
+                        s.copy(materializing = null, recipes = listOf(recipe) + rest)
+                    }
+                    recipe.id?.let(onReady)
+                }
+                is ApiResult.Failure ->
+                    _state.update { it.copy(materializing = null, error = result.message) }
             }
         }
     }

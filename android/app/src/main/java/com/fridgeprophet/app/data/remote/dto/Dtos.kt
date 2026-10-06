@@ -880,3 +880,9 @@ data class RecommendResponse(
     @SerialName("ready_count") val readyCount: Int = 0,
     val dishes: List<DishRecommendation> = emptyList(),
 )
+
+/** 「照着菜品库里的某道菜生成详细做法」的请求。只传菜名。 */
+@Serializable
+data class MaterializeRequest(
+    val name: String,
+)

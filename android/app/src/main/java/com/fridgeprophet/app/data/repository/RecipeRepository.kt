@@ -11,6 +11,7 @@ import com.fridgeprophet.app.data.remote.dto.MealActionRequest
 import com.fridgeprophet.app.data.remote.dto.RecipeGenerateRequest
 import com.fridgeprophet.app.data.remote.dto.RecipeGenerateResponse
 import com.fridgeprophet.app.data.remote.dto.RecommendResponse
+import com.fridgeprophet.app.data.remote.dto.MaterializeRequest
 import com.fridgeprophet.app.data.remote.dto.RecipeOut
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -64,4 +65,13 @@ class RecipeRepository @Inject constructor(private val api: FridgeApi) {
     /** 按冰箱现有食材推荐能做的菜。查库，毫秒级、不花钱。 */
     suspend fun recommend(limit: Int = 40): ApiResult<RecommendResponse> =
         safeApiCall { api.recommendRecipes(limit = limit) }
+
+    /**
+     * 照着菜品库里的某道菜生成详细做法。
+     *
+     * 后端**幂等**：已经生成过的菜会直接返回库里那条，不再调 AI。
+     * 所以客户端可以放心让用户反复点。
+     */
+    suspend fun materialize(name: String): ApiResult<RecipeOut> =
+        safeApiCall { api.materializeRecipe(MaterializeRequest(name)) }
 }

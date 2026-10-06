@@ -34,6 +34,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -143,14 +144,22 @@ fun RecipesScreen(
                     ) {
                         item {
                             Text(
-                                text = "根据你冰箱里的食材，有 ${state.readyCount} 道现在就能做",
+                                text = "根据你冰箱里的食材，有 ${state.readyCount} 道现在就能做 · 点任意一道看做法",
                                 style = MaterialTheme.typography.labelLarge,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(start = 4.dp, bottom = 2.dp),
                             )
                         }
                         items(items = recs, key = { it.name }) { dish ->
-                            DishCard(dish)
+                            DishCard(
+                                dish = dish,
+                                materializing = state.materializing == dish.name,
+                                // 生成期间把其它卡片一并置灰：不是禁用功能，
+                                // 是让用户看见「正在忙，别连点」。点上去没反应
+                                // 比灰掉更让人烦躁。
+                                enabled = state.materializing == null,
+                                onClick = { viewModel.materialize(dish, onOpenRecipe) },
+                            )
                         }
                         item { Box(Modifier.height(24.dp)) }
                     }
@@ -352,13 +361,30 @@ fun RecipeCard(
  *（一个是数据库里的 RecipeOut、一个是菜品库的 DishRecommendation），
  * 字段和交互都不一样。硬塞进一个 composable 会让两边都变复杂。
  *
- * ⚠️ 目前**不可点**。推荐菜只是「菜品库里收录了这道菜」，
- * 数据库里还没有它的步骤和营养 —— 点进去会是空页面。
- * 下一步做「照着这道菜生成详情」再让它可点。
+ * ## 点击行为
+ *
+ * 菜品库里只有「菜名 + 必需食材 + 配图」，**没有步骤和营养**，
+ * 所以点一下不能直接跳详情页 —— 那边会是空白。点击走的是
+ * 「照着这道菜让 AI 写一份做法」，拿到 id 之后再跳（见
+ * `RecipesViewModel.materialize`）。首次点要等十几秒，第二次点是秒开
+ * （后端幂等，直接返回库里那条）。
+ *
+ * 因为首次要等十几秒，卡片必须**把等待状态说出来**：光转个圈用户会以为
+ * 卡死了，反复点。所以这里直接显示「AI 正在写做法，约需 10~20 秒」。
  */
 @Composable
-private fun DishCard(dish: DishRecommendation) {
-    SectionCard {
+private fun DishCard(
+    dish: DishRecommendation,
+    materializing: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    SectionCard(
+        modifier = Modifier
+            .clickable(enabled = enabled, onClick = onClick)
+            // 生成期间其它卡片轻微压暗，把注意力集中到正在转圈的那张
+            .alpha(if (enabled) 1f else 0.55f),
+    ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -384,11 +410,19 @@ private fun DishCard(dish: DishRecommendation) {
                     )
                 }
                 Spacer(Modifier.height(2.dp))
-                Text(
-                    text = dish.category,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                if (materializing) {
+                    Text(
+                        text = "AI 正在写做法，约需 10~20 秒",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                } else {
+                    Text(
+                        text = dish.category,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 if (dish.missing.isNotEmpty()) {
                     Spacer(Modifier.height(4.dp))
                     Text(
@@ -398,13 +432,27 @@ private fun DishCard(dish: DishRecommendation) {
                     )
                 }
             }
-            FoodImage(
-                imageUrl = dish.imageUrl,
-                name = dish.name,
-                modifier = Modifier
-                    .size(88.dp)
-                    .clip(RoundedCornerShape(14.dp)),
-            )
+
+            // 生成中把配图换成转圈 —— 位置不变，卡片不会跳高
+            if (materializing) {
+                Box(
+                    modifier = Modifier.size(88.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(28.dp),
+                        strokeWidth = 3.dp,
+                    )
+                }
+            } else {
+                FoodImage(
+                    imageUrl = dish.imageUrl,
+                    name = dish.name,
+                    modifier = Modifier
+                        .size(88.dp)
+                        .clip(RoundedCornerShape(14.dp)),
+                )
+            }
         }
     }
 }
