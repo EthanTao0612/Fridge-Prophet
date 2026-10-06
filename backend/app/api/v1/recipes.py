@@ -20,6 +20,7 @@ from app.schemas.recipe import (
     RecipeGenerateResponse,
     RecipeIngredientOut,
     RecipeOut,
+    RecipeMaterializeRequest,
 )
 from app.services.family_service import can_write, visible_user_ids
 from app.services.food_image_service import resolve_image_url
@@ -349,6 +350,73 @@ def recommend(
         "ready_count": sum(1 for d in dishes if d["ready"]),
         "dishes": dishes,
     }
+
+
+@router.post("/materialize", response_model=RecipeOut,
+             summary="照着菜品库里的某道菜生成详细做法")
+def materialize(
+    payload: RecipeMaterializeRequest, user: CurrentUser, db: DbSession
+) -> RecipeOut:
+    """把菜品库里的一道菜「落实」成一条完整的菜谱（含步骤和营养）。
+
+    ## 为什么要单独一个接口
+
+    菜品库（192 道）里只有「菜名 + 必需食材 + 配图」——
+    这些是人工整理的，准确而且免费。但**没有步骤和营养**，
+    所以推荐列表点进去会是空页面。
+
+    这 192 道菜如果全部预先用 AI 生成步骤，要跑 192 次调用（慢且贵），
+    而用户实际只会点开其中几道。所以改成**按需生成**。
+
+    ## 幂等
+
+    已经生成过的菜**直接返回库里的那条**，不再调 AI ——
+    用户反复点同一道菜不会重复花钱，也不会在列表里攒出多行。
+    """
+    from app.services.dish_library import DISH_NAMES
+
+    name = payload.name.strip()
+    # 必须是菜品库里真实存在的菜。
+    # 不校验的话客户端能传任意名字让 AI 现编 —— 那等于绕过了菜品库，
+    # 也绕过了「这 192 道菜是人工核对过的」这个前提。
+    if name not in DISH_NAMES:
+        raise HTTPException(status_code=404, detail=f"菜品库里没有「{name}」")
+
+    # ① 已经生成过 → 直接返回，不花钱
+    existing = (
+        db.query(Recipe)
+        .filter(
+            Recipe.user_id.in_(visible_user_ids(db, user.id)),
+            Recipe.name == name,
+        )
+        .first()
+    )
+    if existing is not None:
+        inventory = _load_inventory(db, user.id)
+        return _with_availability(_row_to_out(existing), inventory)
+
+    # ② 没生成过 → 调 AI 生成这一道
+    _guard_write(db, user.id)
+    inventory, expiring, pref, health = _load_context(db, user.id)
+
+    recipes, _model = generate_recipes(
+        inventory=inventory,
+        pref=pref,
+        health=health,
+        count=1,
+        max_time=None,
+        expiring=expiring,
+        focus_dish=name,
+    )
+    if not recipes:
+        raise HTTPException(status_code=502, detail="生成失败，请稍后重试")
+
+    row = _persist_or_update(db, user.id, recipes[0])
+    db.commit()
+    db.refresh(row)
+
+    inventory = _load_inventory(db, user.id)
+    return _with_availability(_row_to_out(row), inventory)
 
 
 @router.get("/{recipe_id}", response_model=RecipeOut, summary="菜谱详情")

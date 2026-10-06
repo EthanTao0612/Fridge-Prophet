@@ -750,6 +750,44 @@ def main() -> int:
             cats = {d["category"] for d in r.json()["dishes"]}
             check("按分类过滤生效", cats <= {"汤羹"}, str(cats))
 
+        # ② 把推荐菜「落实」成完整菜谱（含步骤）
+        r = client.post("/api/v1/recipes/materialize",
+                        json={"name": "不存在的菜"}, headers=headers)
+        check("菜品库里没有的菜被拒（不让客户端让 AI 现编）",
+              r.status_code == 404, r.text[:200])
+
+        r = client.post("/api/v1/recipes/materialize",
+                        json={"name": "西红柿炒鸡蛋"}, headers=headers)
+        check("照着一道菜生成详情", r.status_code == 200, r.text[:200])
+        if r.status_code == 200:
+            made = r.json()
+            check("菜名和请求的一致（模型没改名）",
+                  made["name"] == "西红柿炒鸡蛋", made["name"])
+            check("有步骤", len(made.get("steps") or []) > 0,
+                  str(len(made.get("steps") or [])))
+            check("有配图（用菜品库的专属图）",
+                  bool(made.get("image_url")), str(made.get("image_url")))
+            made_id = made["id"]
+
+            # 幂等：再点一次应该直接返回同一条，不再调 AI
+            import time as _t
+            t0 = _t.perf_counter()
+            r2 = client.post("/api/v1/recipes/materialize",
+                             json={"name": "西红柿炒鸡蛋"}, headers=headers)
+            elapsed = _t.perf_counter() - t0
+            check("重复点击返回同一条（幂等）",
+                  r2.status_code == 200 and r2.json()["id"] == made_id,
+                  f"{r2.status_code} {r2.json().get('id')} vs {made_id}")
+            # 第二次不该再调 AI —— 秒回。给 2 秒余量（MOCK 模式本来就快）
+            check("重复点击不再调 AI（秒回）", elapsed < 2.0, f"{elapsed:.2f}s")
+
+            # ⚠️ **测完必须删掉这道菜。**
+            # 它是本节的产物，留在库里会污染后面的用例 ——
+            # 实测「菜谱列表」和「生成采购清单」两节直接挂了
+            #（多了一道菜，采购清单就不缺东西了）。
+            # 每节测试要自包含：自己造的脏数据自己清。
+            client.delete(f"/api/v1/recipes/{made_id}", headers=headers)
+
         print("\n=== 7. 菜谱详情与行为反馈 ===")
         r = client.get("/api/v1/recipes", headers=headers)
         check("菜谱列表", r.status_code == 200 and len(r.json()) == 3, r.text[:300])

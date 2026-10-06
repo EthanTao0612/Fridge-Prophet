@@ -134,6 +134,7 @@ def _build_user_prompt(
     expiring: list[str],
     extra_notes: str | None,
     exclude: list[str] | None = None,
+    focus_dish: str | None = None,
 ) -> str:
     expiring_line = (
         f"\n⚠️ 即将过期，请优先消耗：{'、'.join(expiring)}\n" if expiring else ""
@@ -155,6 +156,32 @@ def _build_user_prompt(
             f"上面这些菜用户已经看过了。请推荐**完全不同**的菜，"
             f"哪怕换个主料、换个做法都行，就是不要重复上面的菜名。\n"
         )
+
+    # 「照着某道菜生成详情」用 —— 用户点了菜品库里的一道菜，
+    # 我们要的是**这一道**的步骤和营养，不是让它自由发挥。
+    focus_line = ""
+    if focus_dish:
+        focus_line = (
+            f"\n【必须生成这一道菜】{focus_dish}\n"
+            f"菜名必须**原样**使用「{focus_dish}」，不要改名、不要换成别的菜。\n"
+            f"只生成这 1 道，不要多给。\n"
+        )
+
+    if focus_dish:
+        return f"""请为用户生成「{focus_dish}」这一道菜的详细做法。
+
+【冰箱现有库存】（这是唯一真实存在的食材，不得声称拥有其他食材）
+{_fmt_inventory(inventory)}
+{expiring_line}
+【用户画像与约束】
+{_fmt_preference(pref, health)}
+{focus_line}
+【额外要求】
+- 菜名必须是「{focus_dish}」，一个字都不要改
+- 做法要符合这道菜的传统做法，不要自创
+- 需要什么食材就如实列出（哪怕冰箱里没有）——
+  缺料由后端按真实库存算，你只管把菜谱写对
+- 只返回 JSON，里面**只包含 1 道菜**{notes}"""
 
     return f"""请为用户推荐 {count} 道菜。
 
@@ -266,9 +293,40 @@ def _recompute_availability(
 
 
 def _mock_recipes(
-    inventory: list[FoodInventory], count: int, expiring: list[str]
+    inventory: list[FoodInventory],
+    count: int,
+    expiring: list[str],
+    focus_dish: str | None = None,
 ) -> list[dict]:
-    """无密钥时的兜底菜谱，保证演示链路完整。"""
+    """无密钥时的兜底菜谱，保证演示链路完整。
+
+    ⚠️ `focus_dish` 必须支持 —— 「照着菜品库里的某道菜生成详情」
+    在 MOCK 模式下也要能用。不支持的话，没配密钥时点推荐卡片
+    会得到一个空的 502，而调用方（`materialize`）还会因为
+    「模型返回的菜名对不上」把它过滤掉，报错信息完全指不到真正原因。
+    """
+    # 指定了菜名 → 就返回这一道（步骤是占位，但菜名必须准确）
+    if focus_dish:
+        return [
+            {
+                "name": focus_dish,
+                "description": f"{focus_dish}（MOCK 模式生成的占位做法）",
+                "time_minutes": 20,
+                "difficulty": "easy",
+                "ingredients": [
+                    {"name": i.food_name, "quantity": 1, "unit": i.unit}
+                    for i in inventory[:4]
+                ],
+                "steps": [
+                    f"准备{focus_dish}需要的食材，洗净切好",
+                    "热锅下油，按顺序下锅翻炒",
+                    "调味后出锅装盘",
+                ],
+                "nutrition": {"calories_kcal": 300, "protein_g": 15, "carbs_g": 30,
+                              "fat_g": 12},
+            }
+        ]
+
     names = [i.food_name for i in inventory] or ["鸡蛋", "西红柿"]
     pool = [
         {
@@ -339,6 +397,7 @@ def generate_recipes(
     expiring: list[str] | None = None,
     extra_notes: str | None = None,
     exclude: list[str] | None = None,
+    focus_dish: str | None = None,
 ) -> tuple[list[RecipeOut], str]:
     """返回 (菜谱列表, 使用的模型名)。
 
@@ -359,7 +418,7 @@ def generate_recipes(
                 system=RECIPE_SYSTEM_PROMPT,
                 user_text=_build_user_prompt(
                     inventory, pref, health, count, effective_max_time,
-                    expiring, extra_notes, exclude,
+                    expiring, extra_notes, exclude, focus_dish,
                 ),
                 model=settings.TEXT_MODEL,
                 temperature=0.7,
@@ -368,10 +427,10 @@ def generate_recipes(
             model_name = settings.TEXT_MODEL
         except AIUnavailable as exc:
             logger.error("菜谱生成失败，降级为 MOCK: %s", exc)
-            raw_recipes = _mock_recipes(inventory, count, expiring)
+            raw_recipes = _mock_recipes(inventory, count, expiring, focus_dish)
             model_name = "mock"
     else:
-        raw_recipes = _mock_recipes(inventory, count, expiring)
+        raw_recipes = _mock_recipes(inventory, count, expiring, focus_dish)
         model_name = "mock"
 
     results: list[RecipeOut] = []
@@ -388,6 +447,13 @@ def generate_recipes(
             logger.info("本次生成出现重名菜谱，已跳过：%s", name)
             continue
         seen_names.add(name)
+
+        # 「照着某道菜生成」时只保留菜名对得上的那道。
+        # 提示词里已经明确说了「只生成这 1 道」，但模型偶尔还是会顺手多给 ——
+        # 多出来的那道会变成一个用户没点过的卡片，属于噪音。
+        if focus_dish and name != focus_dish:
+            logger.info("focus_dish=%s 但模型返回了「%s」，已跳过", focus_dish, name)
+            continue
 
         ingredients, missing = _recompute_availability(
             raw.get("ingredients") or [], inventory

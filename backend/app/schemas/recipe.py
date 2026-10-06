@@ -80,6 +80,16 @@ class RecipeGenerateResponse(BaseModel):
     expiring_used: list[str] = Field(default_factory=list)
 
 
+class RecipeMaterializeRequest(BaseModel):
+    """「照着菜品库里的某道菜生成详细做法」的入参。
+
+    只传菜名。**必须是菜品库里真实存在的菜** —— 后端会校验，
+    不让客户端随便传个名字让 AI 现编（那等于绕过了菜品库）。
+    """
+
+    name: str = Field(min_length=1, max_length=64)
+
+
 class MealActionRequest(BaseModel):
     recipe_id: int
     action: Literal["view", "favorite", "cook", "skip", "rate"]
