@@ -60,6 +60,11 @@ class RecipeOut(BaseModel):
     # 菜品配图，**相对路径**（如 /static/recipes/tomato-egg.jpg）。
     # 客户端自己拼域名；没有配图时为 None，此时客户端显示占位样式即可。
     image_url: str | None = None
+    # 是不是**系统内置**菜谱（菜品库那 192 道，所有用户共用一条记录）。
+    #
+    # 客户端拿它决定要不要显示「删除」：内置的删不掉（后端给 403），
+    # 显示一个点了必然报错的按钮比不显示更糟。
+    is_builtin: bool = False
     created_at: datetime | None = None
 
 

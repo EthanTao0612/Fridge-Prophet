@@ -11,7 +11,7 @@
 | 级 | 依据 | 典型场景 |
 |---|---|---|
 | ① 挡刀区 | 手写规则，防加工品误配 | 番茄酱 → seasoning（不是番茄） |
-| ② 词库精确 | 574 条标准中文名 | 五花肉 → pork-belly |
+| ② 词库精确 | 579 条标准中文名 | 五花肉 → pork-belly |
 | ③ 别名 | 手写的高频俗称 | 车厘子 → cherry |
 | ④ **子串匹配** | 名字被包含，**最长优先** | **肥羊肉 → 羊肉** |
 | ⑤ 关键词兜底 | 手写规则，覆盖词库没有的写法 | — |
@@ -107,7 +107,46 @@ def main() -> int:
     check("羊奶 不被「羊」抢走（词库有专属图）",
           resolve_ingredient_key("羊奶"), "goat-milk")
 
-    print("\n=== 3. 词库精确匹配（574 条标准名）===")
+    print("\n=== 2c. 罐头：只做「水果 / 肉食」两张通用图 ===")
+    # Ethan 明确要求：不给每种罐头单独配图（罐头太多了），
+    # 只保留两张通用图。甜口的走水果罐，咸口的走肉食罐。
+    #
+    # ⚠️ 这一组测的是**挡刀区**必须排在原料规则前面：
+    #   不拦的话「黄桃罐头」会被「桃」抢成桃子图、
+    #   「豆豉鲮鱼罐头」会被「豆豉」抢成豆豉图、
+    #   「金枪鱼罐头」会被「鱼」抢成生鱼图 ——
+    #   用户看到新鲜桃子和生鱼，而他要找的是一罐能直接开的东西。
+    for name, want in [
+        ("水果罐头", "canned-fruit"),   # 词库精确
+        ("黄桃罐头", "canned-fruit"),   # 否则被「桃」抢走
+        ("什锦罐头", "canned-fruit"),
+        ("山楂罐头", "canned-fruit"),
+        ("肉食罐头", "canned-meat"),    # 词库精确
+        ("午餐肉罐头", "canned-meat"),
+        ("金枪鱼罐头", "canned-meat"),  # 否则被「鱼」抢走
+        ("豆豉鲮鱼罐头", "canned-meat"),  # 否则被「豆豉」抢走
+        ("鱼罐头", "canned-meat"),
+    ]:
+        check(f"{name} -> {want}", resolve_ingredient_key(name), want)
+
+    # 「玉米罐头」**故意**不拦：它既不甜也不荤，
+    # 落到「玉米」的图反而更能让人认出是什么（Ethan 也说过不给它单独配图）。
+    check("玉米罐头 仍然走玉米的图（故意不拦）",
+          resolve_ingredient_key("玉米罐头"), "corn")
+
+    print("\n=== 2d. 后补的 5 个 key（红葡萄 / 八宝粥 / 即食麦片等）===")
+    # 这几个是 2026-10-06 补图的。关键是它们**不能被更短的名字抢走**：
+    # 「红葡萄」含「葡萄」、「八宝粥」含「粥」、 「即食麦片」含「麦片」。
+    check("红葡萄 -> red-grape（不是普通葡萄）",
+          resolve_ingredient_key("红葡萄"), "red-grape")
+    check("葡萄 -> grape（不受红葡萄影响）",
+          resolve_ingredient_key("葡萄"), "grape")
+    check("八宝粥 -> eight-treasure-porridge",
+          resolve_ingredient_key("八宝粥"), "eight-treasure-porridge")
+    check("即食麦片 -> instant-cereal",
+          resolve_ingredient_key("即食麦片"), "instant-cereal")
+
+    print("\n=== 3. 词库精确匹配（579 条标准名）===")
     for name, want in [
         ("五花肉", "pork-belly"), ("排骨", "pork-ribs"), ("牛腩", "beef-brisket"),
         ("三文鱼", "salmon"), ("带鱼", "hairtail-fish"), ("鱿鱼", "squid"),
@@ -224,7 +263,7 @@ def main() -> int:
     print("\n=== 9. 只返回磁盘上真实存在的图 ===")
     keys_on_disk = set(available_keys())
     print(f"         磁盘上现有 {len(keys_on_disk)} 张食材图")
-    check("磁盘上图片数量 > 500（574 张新批次已导入）", len(keys_on_disk) > 500, True)
+    check("磁盘上图片数量 > 500（579 张新批次已导入）", len(keys_on_disk) > 500, True)
 
     for name in ("番茄", "五花肉", "三文鱼", "苹果"):
         check(f"{name} 能取到图", resolve_ingredient_image(name) is not None, True)

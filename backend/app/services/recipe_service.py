@@ -11,8 +11,12 @@ from __future__ import annotations
 
 import logging
 
+from sqlalchemy import or_
+from sqlalchemy.orm import Session
+
 from app.core.config import settings
 from app.models.inventory import FoodInventory
+from app.models.recipe import Recipe
 from app.models.user import HealthPreference, UserPreference
 from app.schemas.recipe import (
     CookPlan,
@@ -23,9 +27,57 @@ from app.schemas.recipe import (
     RecipeOut,
 )
 from app.services.ai_client import AIUnavailable, ai_client
+from app.services.family_service import visible_user_ids
 from app.services.food_image_service import resolve_image_url
 
 logger = logging.getLogger(__name__)
+
+# ============================================================
+#  菜谱的可见范围 —— ⚠️ 只在这里定义一次
+# ============================================================
+#
+# 菜谱表里有两类数据，**读和写的范围不一样**：
+#
+#   user_id 为 NULL   →  系统内置菜谱（菜品库那 192 道，所有用户可见）
+#   user_id 有值      →  用户自己（或家人）生成的菜谱
+#
+# 为什么必须拆成两个函数：
+#
+#   如果读和写共用一套范围，用户就能**删掉系统内置菜谱** ——
+#   而那条记录是所有用户共用的，删一次全都没了。
+#   同理，AI 生成时按菜名查重如果查到了内置菜谱，会把内置那条
+#   改写成用户自己的（`source` 从 builtin 变成 ai），也是全局污染。
+#
+# 和 `family_service.visible_user_ids()` 的分工：
+#   那个函数回答「我能看到哪些**人**的数据」，
+#   这两个函数回答「在**菜谱**这张表上，我能看到 / 能改哪些行」。
+#   后者建立在前者之上，所以改家庭规则时不用动这里。
+
+
+def readable_recipe_clause(db: Session, user_id: int):
+    """**读**菜谱时的可见范围：系统内置 + 自己/家人。
+
+    列表、详情、做菜预览、扣减库存、采购清单、用户行为上报都用它。
+    漏用的后果是「推荐列表里有这道菜，点进去 404」。
+    """
+    return or_(
+        Recipe.user_id.is_(None),
+        Recipe.user_id.in_(visible_user_ids(db, user_id)),
+    )
+
+
+def editable_recipe_clause(db: Session, user_id: int):
+    """**写**菜谱时的可见范围：自己/家人，**不含系统内置**。
+
+    按菜名查重、删除、改名都用它。
+    """
+    return Recipe.user_id.in_(visible_user_ids(db, user_id))
+
+
+def is_builtin(row) -> bool:
+    """这条菜谱是不是系统内置的（决定界面上要不要显示「删除」）。"""
+    return getattr(row, "user_id", None) is None
+
 
 RECIPE_SYSTEM_PROMPT = """你是一位擅长中国家常菜的营养厨师，服务于「冰箱先知」这个 App。
 用户会给你他的冰箱库存、饮食偏好和健康约束，你需要推荐真正能做的菜。
@@ -199,6 +251,53 @@ def _build_user_prompt(
 
 def _normalize_unit(u: str) -> str:
     return (u or "").strip().lower()
+
+
+# `recipe_ingredients.unit` 是 VARCHAR(16)，而模型偶尔会在单位字段里塞注释。
+# 离线生成 192 道菜时实测出现过的脏值：
+#   「汤匙（即oyster-sauce）」  17 个字 —— 直接超长
+#   「个（可选）」「茶匙（可选）」 把 optional 混进了单位
+#   「/2勺」「/4 茶匙」          分数写残了，前面的 1 丢了
+#
+# ⚠️ 这个坑**在 SQLite 上测不出来**（SQLite 不校验 VARCHAR 长度），
+# 只有在生产库（Postgres）上才会炸：
+#   StringDataRightTruncation → 整个请求 500。
+# 而且它出现在**写库**路径上，等于「AI 哪次心情不好，用户就存不了菜谱」。
+#
+# 所以清洗放在这里，**写库的两个入口共用**：
+#   ① `_persist`（/generate 和 /materialize 的兜底路径）
+#   ② `tools/seed-dish-recipes.py`（离线灌菜品库）
+UNIT_MAX_LEN = 16
+UNIT_FALLBACK = "份"
+
+
+def clean_unit(raw: str) -> str:
+    """把模型给的单位洗成能安全入库的形式。
+
+    规则（按顺序）：
+      1. 去掉首尾空白
+      2. 去掉括号注释：`汤匙（即oyster-sauce）` → `汤匙`、`个（可选）` → `个`
+      3. 去掉残缺分数的前导斜杠：`/2勺` → `勺`
+      4. 还是空的、或者仍然超过 16 个字 → 退成 `份`
+
+    第 4 步是**兜底而不是截断**：超过 16 个字的东西肯定不是一个单位，
+    截断只会得到「汤匙（即oyster-sa」这种更莫名其妙的值。
+    """
+    import re
+
+    text = (raw or "").strip()
+    if not text:
+        return UNIT_FALLBACK
+
+    # 中英文括号都去掉。用 `.*` 贪婪匹配到最后一个右括号，
+    # 这样「块（约350g）」这种只去一次就干净了。
+    text = re.sub(r"[（(].*[)）]", "", text).strip()
+    # 残缺分数：AI 写「1/2勺」时前面的 1 有时会丢，留下「/2勺」
+    text = re.sub(r"^/\s*\d+\s*", "", text).strip()
+
+    if not text or len(text) > UNIT_MAX_LEN:
+        return UNIT_FALLBACK
+    return text
 
 
 def _index_stock(inventory: list[FoodInventory]) -> dict[str, FoodInventory]:

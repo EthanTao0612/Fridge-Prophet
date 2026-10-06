@@ -192,7 +192,10 @@ fun RecipesScreen(
                     RecipeCard(
                         recipe = recipe,
                         onClick = { recipe.id?.let(onOpenRecipe) },
-                        onDelete = { deleting = recipe },
+                        // 系统内置菜谱（菜品库那 192 道）**不显示删除按钮**：
+                        // 它是所有用户共用的一条记录，后端会拒绝删除（403）。
+                        // 显示一个点了必然报错的按钮，比不显示更糟。
+                        onDelete = if (recipe.isBuiltin) null else ({ deleting = recipe }),
                     )
                 }
                 item { Box(Modifier.height(24.dp)) }
@@ -282,6 +285,12 @@ fun RecipeCard(
                     modifier = Modifier.padding(top = 8.dp),
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
+                    // 内置菜品库的标记。列表里现在同时有「你自己的菜谱」和
+                    // 「菜品库那 192 道」，不区分的话用户会以为
+                    // 「我什么时候生成过这么多菜」。
+                    if (recipe.isBuiltin) {
+                        Pill(text = "菜品库", color = MaterialTheme.colorScheme.tertiary)
+                    }
                     if (recipe.usesExpiring.isNotEmpty()) {
                         Pill(text = "消耗临期", color = SemanticColors.soon)
                     }
@@ -363,14 +372,13 @@ fun RecipeCard(
  *
  * ## 点击行为
  *
- * 菜品库里只有「菜名 + 必需食材 + 配图」，**没有步骤和营养**，
- * 所以点一下不能直接跳详情页 —— 那边会是空白。点击走的是
- * 「照着这道菜让 AI 写一份做法」，拿到 id 之后再跳（见
- * `RecipesViewModel.materialize`）。首次点要等十几秒，第二次点是秒开
- * （后端幂等，直接返回库里那条）。
+ * 菜品库里只有「菜名 + 必需食材 + 配图」，**没有步骤和营养** ——
+ * 但**这些已经离线生成好、作为系统内置菜谱存在数据库里了**
+ *（见 `tools/generate-dish-recipes.py`）。所以点击就是
+ * 「按菜名查库、拿回完整菜谱、跳详情页」，毫秒级。
  *
- * 因为首次要等十几秒，卡片必须**把等待状态说出来**：光转个圈用户会以为
- * 卡死了，反复点。所以这里直接显示「AI 正在写做法，约需 10~20 秒」。
+ * 之前是「点开才让 AI 现写」，第一次点要等十几秒。现在不是了，
+ * 所以卡片上的等待文案也从「约需 10~20 秒」改成了「正在打开做法…」。
  */
 @Composable
 private fun DishCard(
@@ -412,7 +420,11 @@ private fun DishCard(
                 Spacer(Modifier.height(2.dp))
                 if (materializing) {
                     Text(
-                        text = "AI 正在写做法，约需 10~20 秒",
+                        // ⚠️ 这里**不要**再写「约需 10~20 秒」。
+                        // 菜品库那 192 道菜的做法已经离线生成好、存在库里了，
+                        // 点开是直接查库返回（毫秒级）。写十几秒会让人以为卡住，
+                        // 实际上早就好了。
+                        text = "正在打开做法…",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.primary,
                     )

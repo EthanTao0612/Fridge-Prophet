@@ -11,7 +11,7 @@
 
 ## 词库从哪来
 
-`ingredient_lexicon.py` 是**自动生成**的（574 条），由
+`ingredient_lexicon.py` 是**自动生成**的（579 条），由
 `tools/build-ingredient-lexicon.py` 从 `backend/data/ingredient-manifest.csv` 生成。
 **要改分类，改 CSV 再重新生成，不要手改那个文件。**
 
@@ -38,7 +38,7 @@ CATEGORY_ORDER: dict[str, int] = {name: i for i, name in enumerate(CATEGORIES)}
 
 # —— 补充的 key → 分类 ——
 #
-# 词库里只有生成图片时的 574 个 key。这里补的是**规则表里引用、
+# 词库里只有生成图片时的 579 个 key。这里补的是**规则表里引用、
 # 但清单里没有**的那些 —— 大多是早期的通用图（fish / seafood / mushroom
 # 这些），它们的图还在，规则表也还在用。
 _SUPPLEMENT: dict[str, str] = {
@@ -63,7 +63,7 @@ KEY_CATEGORY: dict[str, str] = {**_LEXICON_KEY_CATEGORY, **_SUPPLEMENT}
 # —— 分类 → 万能图 key ——
 #
 # 「万能图」是每个分类各一张的代表性图片，用于**词库里没有的食材**。
-# 有 574 张具体图之后它很少被用到，但**不能省** ——
+# 有 579 张具体图之后它很少被用到，但**不能省** ——
 # 用户随手输一个「空气炸锅鸡块」，总得有个东西显示，比空白占位好。
 CATEGORY_IMAGE_KEY: dict[str, str] = dict(UNIVERSAL_KEYS)
 
@@ -105,7 +105,7 @@ CATEGORY_ALIASES: dict[str, str] = {
 
 # —— 关键词推断 ——
 #
-# 词库（574 条）覆盖了绝大多数常见食材，这一区是给**词库里没有的写法**兜底的。
+# 词库（579 条）覆盖了绝大多数常见食材，这一区是给**词库里没有的写法**兜底的。
 #
 # ⚠️ 顺序仍然是语义：从上往下匹配、命中即停。
 # 和图片规则表一样，具体要排在笼统前面 —— 最典型的陷阱是「瓜」：

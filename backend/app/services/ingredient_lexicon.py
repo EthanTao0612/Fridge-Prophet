@@ -4,7 +4,7 @@
 
 要改词库：改 CSV，再跑一次生成脚本。
 
-数据来源：Ethan 在外部程序批量生成的 574 张食材图，
+数据来源：Ethan 在外部程序批量生成的 579 张食材图，
 每张都带中文名、英文 key、两级分类。
 
 - `INGREDIENT_ALIASES`：中文名 → 图片 key（也是匹配用的标识符）
@@ -593,6 +593,11 @@ INGREDIENT_ALIASES: dict[str, str] = {
     "石膏粉": "gypsum-powder",
     "酒曲": "jiuqu",
     "红曲米": "red-yeast-rice",
+    "水果罐头": "canned-fruit",
+    "肉食罐头": "canned-meat",
+    "红葡萄": "red-grape",
+    "八宝粥": "eight-treasure-porridge",
+    "即食麦片": "instant-cereal",
 }
 
 # 图片 key → 分类。
@@ -1171,6 +1176,11 @@ KEY_CATEGORY: dict[str, str] = {
     "gypsum-powder": "调味",
     "jiuqu": "调味",
     "red-yeast-rice": "调味",
+    "canned-fruit": "水果",
+    "canned-meat": "肉类",
+    "red-grape": "水果",
+    "eight-treasure-porridge": "主食",
+    "instant-cereal": "主食",
 }
 
 # 分类 → 万能图 key。

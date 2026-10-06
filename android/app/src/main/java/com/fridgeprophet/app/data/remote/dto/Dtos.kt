@@ -479,6 +479,13 @@ data class RecipeOut(
      * 拼接统一走 ApiClient.absoluteUrl()。
      */
     @SerialName("image_url") val imageUrl: String? = null,
+    /**
+     * 是不是**系统内置**菜谱（菜品库那 192 道，所有用户共用一条记录）。
+     *
+     * 界面拿它决定要不要显示「删除」：内置的删不掉（后端给 403），
+     * 显示一个点了必然报错的按钮比不显示更糟。
+     */
+    @SerialName("is_builtin") val isBuiltin: Boolean = false,
 )
 
 @Serializable

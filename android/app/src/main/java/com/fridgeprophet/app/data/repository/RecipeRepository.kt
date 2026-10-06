@@ -36,6 +36,14 @@ class RecipeRepository @Inject constructor(private val api: FridgeApi) {
         )
     }
 
+    /**
+     * 菜谱列表：**自己/家人生成的**（不含菜品库）。
+     *
+     * 菜品库那 192 道的浏览入口是「推荐」标签 —— 按冰箱里现有的食材挑，
+     * 比在「全部」里平铺 192 道更贴合「我今天能做什么」。
+     * 后端那边有详细说明：192 道完整菜谱是 482KB，从 Supabase 拉要 4 秒，
+     * 放进列表会让菜谱页卡住。
+     */
     suspend fun list(limit: Int = 20): ApiResult<List<RecipeOut>> =
         safeApiCall { api.listRecipes(limit) }
 

@@ -67,22 +67,42 @@ def visible_user_ids(db: Session, user_id: int) -> list[int]:
 
     没加入家庭时返回 `[user_id]`，所以调用方不用写
     「先判断有没有家庭」那一套 —— 少一个分支就少一处能写错的地方。
+
+    ## 为什么在 Session 上缓存
+
+    生产库在 Supabase（孟买），**一次往返实测 169ms**。
+    而这个函数在**同一个请求里会被调好几次** ——
+    比如菜谱详情：算可见范围一次、取库存又一次，就是白白多花 169ms。
+
+    缓存挂在 `db.info` 上（SQLAlchemy 给每个 Session 预留的用户字典），
+    所以**生命周期正好是一个请求** —— 请求结束 Session 关掉，缓存自然没了，
+    不存在「家庭关系改了还读到旧值」的问题。
+
+    加家庭 / 退家庭之后如果同一个请求里还要重新读，那属于另一件事，
+    现在没有这种流程。
     """
+    cache: dict = db.info.setdefault("_visible_user_ids_cache", {})
+    if user_id in cache:
+        return cache[user_id]
+
     membership = (
         db.query(FamilyMembership)
         .filter(FamilyMembership.user_id == user_id)
         .one_or_none()
     )
     if membership is None:
-        return [user_id]
+        result = [user_id]
+    else:
+        rows = (
+            db.query(FamilyMembership.user_id)
+            .filter(FamilyMembership.family_id == membership.family_id)
+            .all()
+        )
+        # 把自己兜进去：万一 membership 表有脏数据，至少不会看不到自己的东西
+        result = sorted({r[0] for r in rows} | {user_id})
 
-    rows = (
-        db.query(FamilyMembership.user_id)
-        .filter(FamilyMembership.family_id == membership.family_id)
-        .all()
-    )
-    # 把自己兜进去：万一 membership 表有脏数据，至少不会看不到自己的东西
-    return sorted({r[0] for r in rows} | {user_id})
+    cache[user_id] = result
+    return result
 
 
 def can_write(db: Session, user_id: int) -> bool:

@@ -477,6 +477,40 @@ else
 fi
 
 # ============================================================
+step "灌菜品库的做法（192 道菜）"
+# ============================================================
+
+# 菜品库那 192 道菜的步骤、营养、配料，是**离线生成一次**存在
+# `backend/data/dish-recipes.json` 里的（跟着 Git 走）。
+# 这一步把它们写进数据库，作为「系统内置菜谱」（user_id 为 NULL）。
+#
+# 为什么必须做：不做的话，App 里点开推荐菜会去**现调 AI 生成做法**，
+# 第一次点要等十几秒，还每次都花 AI 额度。
+# 灌完之后点开是查库返回，毫秒级。
+#
+# 幂等：按菜名 upsert，只动 user_id IS NULL 的行，不会碰用户自己的菜谱。
+# 所以重复跑是安全的（改完 JSON 重跑就会更新）。
+if [ -f "${APP_DIR}/backend/data/dish-recipes.json" ]; then
+    info "写入内置菜谱（第一次要一两分钟，192 道菜 + 配料）…"
+    if sudo -u "$APP_USER" bash -c \
+            "cd '${APP_DIR}/backend' && '${VENV}/bin/python' ../tools/seed-dish-recipes.py" \
+            > /tmp/fridge_seed.log 2>&1; then
+        # 把脚本最后那几行结果打出来 —— 里面有「库里现在有 N 道」和抽查详情
+        tail -8 /tmp/fridge_seed.log | sed 's/^/    /'
+    else
+        warn "灌菜品库失败，完整日志：/tmp/fridge_seed.log"
+        tail -15 /tmp/fridge_seed.log | sed 's/^/    /' || true
+        warn "不影响服务运行，但 App 里点开推荐菜会退回「现调 AI 生成」"
+        warn "修好之后单独执行："
+        warn "  cd ${APP_DIR}/backend && ${VENV}/bin/python ../tools/seed-dish-recipes.py"
+    fi
+else
+    warn "找不到 backend/data/dish-recipes.json，跳过"
+    warn "生成它的命令（本地跑，要 30-40 分钟）："
+    warn "  cd backend && .venv/Scripts/python.exe ../tools/generate-dish-recipes.py"
+fi
+
+# ============================================================
 step "Nginx 反向代理"
 # ============================================================
 

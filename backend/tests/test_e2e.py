@@ -613,6 +613,139 @@ def main() -> int:
               victim["name"] in regen_names,
               f"删了「{victim['name']}」，重新生成后列表是 {regen_names}")
 
+        print("\n=== 6c2. 系统内置菜谱（菜品库）===")
+        # 菜品库那 192 道菜以 `user_id = NULL` 存进 recipes 表，
+        # 语义是「系统内置，所有用户可见」（见 models/recipe.py 的注释）。
+        #
+        # 这一节钉住三件事 —— 都是**只有跨用户才能暴露**的问题：
+        #   ① 别的用户（不是创建者）能看到、能打开
+        #   ② 不能删，而且必须是 403 不是 404
+        #      （用户明明看得见详情页，说「不存在」是自相矛盾的）
+        #   ③ 用户自己的操作**不会改写这条全局记录**
+        import json as _json  # noqa: PLC0415
+        import sqlite3 as _sqlite3  # noqa: PLC0415
+
+        BUILTIN_NAME = "清炒西兰花"
+        conn = _sqlite3.connect(_DB_FILE)
+        cur = conn.execute(
+            "INSERT INTO recipes"
+            " (user_id, name, description, time_minutes, difficulty,"
+            "  steps, nutrition, tags, source, created_at)"
+            " VALUES (NULL, ?, ?, 12, 'easy', ?, ?, ?, 'builtin', '2026-01-01 00:00:00')",
+            (
+                BUILTIN_NAME,
+                "内置做法",
+                _json.dumps(["洗菜", "下锅", "出锅"]),
+                _json.dumps({"calories_kcal": 110}),
+                _json.dumps(["清淡"]),
+            ),
+        )
+        builtin_id = cur.lastrowid
+        conn.execute(
+            "INSERT INTO recipe_ingredients (recipe_id, name, quantity, unit, optional)"
+            " VALUES (?, '西兰花', 300, 'g', 0)",
+            (builtin_id,),
+        )
+        conn.commit()
+        conn.close()
+
+        # 换一个**新注册**的用户：证明内置菜谱不是「只有创建者能看」
+        r = register(client, "builtin-viewer@fridge.com", "test123456")
+        check("另注册一个用户", r.status_code == 201, r.text[:200])
+        viewer = {"Authorization": f"Bearer {r.json()['access_token']}"}
+
+        r = client.get("/api/v1/recipes", headers=viewer)
+        names = [x["name"] for x in r.json()]
+        # ⚠️ 内置菜谱**故意不进「全部」列表**。
+        #
+        # 192 道完整菜谱是 482KB，从 Supabase 拉要 4 秒 —— 放进列表
+        # 会让菜谱页卡住。菜品库的浏览入口是「推荐」标签（按冰箱里的
+        # 食材挑），点推荐卡才走 materialize 拿这一道。
+        check("内置菜谱不出现在「全部」列表里",
+              BUILTIN_NAME not in names, str(names[:20]))
+
+        # 但按 id 打开必须可以 —— 推荐卡点进去就是这条路
+        r = client.get(f"/api/v1/recipes/{builtin_id}", headers=viewer)
+        check("新用户能打开内置菜谱详情", r.status_code == 200, r.text[:200])
+        detail = r.json() if r.status_code == 200 else {}
+        check("内置菜谱带 is_builtin 标记",
+              detail.get("is_builtin") is True, str(detail)[:200])
+        check("内置菜谱的配料/步骤/营养都读得出来",
+              len(detail.get("steps") or []) == 3
+              and len(detail.get("ingredients") or []) == 1
+              and (detail.get("nutrition") or {}).get("calories_kcal") == 110,
+              str(detail)[:300])
+        # 内置菜谱没进列表，所以「用户自己的菜谱」这个概念还是干净的
+        r2 = client.get("/api/v1/recipes", headers=viewer)
+        check("列表返回的条目都不带 is_builtin",
+              all(not x.get("is_builtin") for x in r2.json()), r2.text[:200])
+
+        # ⚠️ 删除必须被拒，而且**是 403 不是 404**。
+        # 内置菜谱是所有用户共用的一条记录，删一次全都没了。
+        r = client.delete(f"/api/v1/recipes/{builtin_id}", headers=viewer)
+        check("删内置菜谱被拒", r.status_code == 403, r.text[:200])
+        r = client.get(f"/api/v1/recipes/{builtin_id}", headers=viewer)
+        check("被拒之后它还在", r.status_code == 200, r.text[:200])
+
+        # materialize 直接返回内置那条（查库，不调 AI），也不该新增行
+        before_cnt = len(client.get("/api/v1/recipes", headers=viewer).json())
+        r = client.post("/api/v1/recipes/materialize", headers=viewer,
+                        json={"name": BUILTIN_NAME})
+        check("materialize 返回内置菜谱", r.status_code == 200, r.text[:200])
+        check("返回的就是内置那条（没另建一份）",
+              r.status_code == 200 and r.json()["id"] == builtin_id, r.text[:200])
+        after_cnt = len(client.get("/api/v1/recipes", headers=viewer).json())
+        check("materialize 没有新增菜谱行", after_cnt == before_cnt,
+              f"{before_cnt} → {after_cnt}")
+
+        # ③ 全局记录没有被改写：还是 user_id NULL + source builtin
+        conn = _sqlite3.connect(_DB_FILE)
+        still = conn.execute(
+            "SELECT user_id, source FROM recipes WHERE id = ?", (builtin_id,)
+        ).fetchone()
+        conn.close()
+        check("内置菜谱仍是全局记录（user_id 为 NULL、source 为 builtin）",
+              still == (None, "builtin"), str(still))
+
+        # 采购清单也要能基于内置菜谱算 —— 只认「自己的菜谱」的话，
+        # 用户从菜品库点开一道菜再点「把缺的加进采购清单」会报 400
+        r = client.post("/api/v1/shopping/build", headers=viewer,
+                        json={"recipe_ids": [builtin_id], "title": "内置菜谱采购"})
+        check("能按内置菜谱建采购清单", r.status_code in (200, 201), r.text[:200])
+        shopping_id = r.json()["id"] if r.status_code in (200, 201) else None
+
+        # 发帖时挂一道内置菜谱。
+        # ⚠️ 这里以前会 404：旧逻辑是「只能分享自己的菜谱」
+        #（`Recipe.user_id == user.id`）。菜品库变成内置菜谱之后，
+        # 发帖界面能选到它们、提交却报「找不到这道菜」——
+        # 用户会觉得「你明明让我选的」。
+        r = client.post("/api/v1/social/posts", headers=viewer,
+                        json={"content": "照着菜品库做的", "recipe_id": builtin_id})
+        check("能分享内置菜谱到广场", r.status_code == 201, r.text[:200])
+        check("帖子带上了内置菜谱的步骤",
+              r.status_code == 201 and len(r.json().get("steps") or []) == 3,
+              r.text[:200])
+        post_id = r.json()["id"] if r.status_code == 201 else None
+
+        # ---- 清理：自己造的脏数据自己清 ----
+        # 内置菜谱留在库里，后面「列表正好 3 条」那类断言就会挂；
+        # 多出来的采购清单和帖子同理。所以都要收拾掉。
+        if shopping_id is not None:
+            client.delete(f"/api/v1/shopping/{shopping_id}", headers=viewer)
+        if post_id is not None:
+            client.delete(f"/api/v1/social/posts/{post_id}", headers=viewer)
+        conn = _sqlite3.connect(_DB_FILE)
+        # 顺序有讲究：先删引用它的行，再删它自己
+        conn.execute("DELETE FROM meal_history WHERE recipe_id = ?", (builtin_id,))
+        conn.execute("DELETE FROM recipe_ingredients WHERE recipe_id = ?", (builtin_id,))
+        conn.execute("DELETE FROM recipes WHERE id = ?", (builtin_id,))
+        conn.commit()
+        gone = conn.execute(
+            "SELECT COUNT(*) FROM recipes WHERE id = ?", (builtin_id,)
+        ).fetchone()[0]
+        conn.close()
+        check("清理掉这一节造的内置菜谱", gone == 0)
+
         print("\n=== 6d. 做菜扣库存 ===")
         # 造一份确定的库存，这样扣减结果能精确断言。
         # 选「番茄鸡蛋豆腐」当样本，它正好覆盖三种情况：
@@ -790,8 +923,15 @@ def main() -> int:
 
         print("\n=== 7. 菜谱详情与行为反馈 ===")
         r = client.get("/api/v1/recipes", headers=headers)
-        check("菜谱列表", r.status_code == 200 and len(r.json()) == 3, r.text[:300])
-        recipe_id = r.json()[0]["id"] if r.status_code == 200 and r.json() else 0
+        # ⚠️ 只数**用户自己的**菜谱。
+        #
+        # 列表接口现在同时返回「自己生成的 + 系统内置的菜品库」，
+        # 生产库里内置的有 192 道 —— 直接数总数的话这个断言
+        # 在真实环境下必然失败（而且失败原因看起来会像「多了几道菜」，
+        # 很难联想到是内置菜谱）。
+        mine = [x for x in r.json() if not x.get("is_builtin")] if r.status_code == 200 else []
+        check("菜谱列表", r.status_code == 200 and len(mine) == 3, r.text[:300])
+        recipe_id = mine[0]["id"] if mine else 0
 
         # 列表必须用当前库存重算缺料，否则「食材齐全」筛选和「缺 N 样」标记全是假的
         listed_recipes = r.json() if r.status_code == 200 else []

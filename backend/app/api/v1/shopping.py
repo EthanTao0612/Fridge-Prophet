@@ -16,6 +16,7 @@ from app.schemas.shopping import (
     ShoppingListOut,
 )
 from app.services.family_service import can_write, visible_user_ids
+from app.services.recipe_service import readable_recipe_clause
 from app.services.shopping_service import compute_missing, merge_into
 
 router = APIRouter(prefix="/shopping", tags=["智能采购"])
@@ -85,19 +86,29 @@ def build_shopping_list(
     payload: ShoppingBuildRequest, user: CurrentUser, db: DbSession
 ) -> ShoppingListOut:
     _guard_write(db, user.id)
+    # 库存仍然按「家人可见」算（和菜谱范围是两回事）：
+    # 用自己那份会把家人已经买的东西又列一遍
     visible = _visible(db, user.id)
+
+    # 菜谱范围用 `readable_recipe_clause`（含系统内置）：
+    # 用户从菜品库点开一道菜、再点「把缺的加进采购清单」——
+    # 如果这里只认「自己的菜谱」，那一步会报 400「还没有可用的菜谱」，
+    # 而屏幕上明明摆着一份完整做法，看起来就像坏了。
+    scope = readable_recipe_clause(db, user.id)
 
     if payload.recipe_ids:
         rows = (
             db.query(Recipe)
-            .filter(Recipe.id.in_(payload.recipe_ids), Recipe.user_id.in_(visible))
+            .filter(Recipe.id.in_(payload.recipe_ids), scope)
             .all()
         )
     else:
-        # 不指定就用最近生成的 days 道菜，对应策划书第十节的「批量采购」
+        # 不指定就用最近生成的 days 道菜，对应策划书第十节的「批量采购」。
+        # 内置菜谱用的是固定旧时间戳（见 seed-dish-recipes.py），
+        # 所以这里挑出来的仍然是用户自己最近生成的菜。
         rows = (
             db.query(Recipe)
-            .filter(Recipe.user_id.in_(visible))
+            .filter(scope)
             .order_by(Recipe.created_at.desc())
             .limit(payload.days * 3)
             .all()

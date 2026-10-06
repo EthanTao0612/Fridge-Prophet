@@ -50,6 +50,7 @@ from app.schemas.social import (
     UserBrief,
 )
 from app.services import social_service as svc
+from app.services.recipe_service import readable_recipe_clause
 from app.services.storage_service import upload_image
 
 router = APIRouter(prefix="/social", tags=["广场"])
@@ -98,13 +99,21 @@ def create_post(payload: PostCreate, user: CurrentUser, db: DbSession) -> PostOu
     steps = list(payload.steps or [])
 
     if payload.recipe_id is not None:
+        # 可见范围用 `readable_recipe_clause`（含系统内置的菜品库）。
+        #
+        # ⚠️ 以前这里写的是 `Recipe.user_id == user.id`（只能分享自己的）。
+        # 菜品库那 192 道变成内置菜谱之后，那个条件会**误伤**：
+        # 发帖界面能选到这些菜，选完提交却报 404「找不到这道菜」——
+        # 用户会觉得「你明明让我选的」。
+        #
+        # 而且「我照着菜品库做了清炒西兰花，发个帖」本来就该允许。
         recipe = (
             db.query(Recipe)
-            .filter(Recipe.id == payload.recipe_id, Recipe.user_id == user.id)
+            .filter(Recipe.id == payload.recipe_id, readable_recipe_clause(db, user.id))
             .one_or_none()
         )
         if recipe is None:
-            raise HTTPException(status_code=404, detail="找不到这道菜（只能分享自己的菜谱）")
+            raise HTTPException(status_code=404, detail="找不到这道菜，刷新一下再试试")
         # 以库里的数据为准，不采信客户端传来的菜名和步骤
         recipe_name = recipe.name
         steps = [str(s) for s in (recipe.steps or [])]

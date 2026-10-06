@@ -26,7 +26,11 @@ from app.services.family_service import can_write, visible_user_ids
 from app.services.food_image_service import resolve_image_url
 from app.services.recipe_service import (
     build_cook_plan,
+    clean_unit,
+    editable_recipe_clause,
     generate_recipes,
+    is_builtin,
+    readable_recipe_clause,
     recompute_availability,
     recommend_dishes,
 )
@@ -39,17 +43,48 @@ def _load_inventory(db: Session, user_id: int) -> list[FoodInventory]:
 
     生成菜谱、算缺料、做菜扣减都基于它。如果这里只看自己那份，
     就会出现「冰箱页显示有鸡蛋、菜谱却说缺鸡蛋」。
+
+    ## ⚠️⚠️ 这个函数有个会拖垮列表接口的副作用，改之前先读完
+
+    `db.commit()` 会让 session 里**所有已加载的对象过期**，
+    之后每访问它们的一个字段都会触发一次 SELECT。
+
+    生产库在 Supabase（孟买），**单次往返实测 169ms**。
+    而菜谱列表要一次读 200 道菜 —— 如果菜谱是在这个函数**之前**查出来的，
+    200 道菜 × 169ms = **74 秒**（实测就是这个数）。
+
+    所以两件事必须一起做：
+      ① 没变化就**不 commit**（绝大多数请求都属此类，见下）
+      ② 真 commit 了，**用一次查询**把这批食材读回来 ——
+         而不是让调用方一个个懒加载
+      ③ 调用方要**先调这个函数、再查菜谱**（见 list_recipes）
     """
-    inventory = (
-        db.query(FoodInventory)
-        .filter(FoodInventory.user_id.in_(visible_user_ids(db, user_id)))
-        .all()
-    )
+    def _query() -> list[FoodInventory]:
+        return (
+            db.query(FoodInventory)
+            .filter(FoodInventory.user_id.in_(visible_user_ids(db, user_id)))
+            .all()
+        )
+
+    inventory = _query()
     today = date.today()
+
+    # `refresh_freshness` 返回「有没有真的变化」。用普通循环而不是 any() ——
+    # `any()` 会短路，后面的食材就不刷了。
+    changed = False
     for it in inventory:
-        it.refresh_freshness(today)
+        if it.refresh_freshness(today):
+            changed = True
+
+    if not changed:
+        # 这是**绝大多数请求**的路径：新鲜度没变，不 commit，对象不过期，
+        # 调用方拿到的是一个干净、不需要再查库的列表
+        return inventory
+
     db.commit()
-    return inventory
+    # 提交之后这批对象已经过期了，一次查询读回来（不要逐个 refresh，
+    # 那是 N 次往返）
+    return _query()
 
 
 def _load_context(db: Session, user_id: int):
@@ -92,9 +127,15 @@ def _persist(db: Session, user_id: int, recipe: RecipeOut) -> Recipe:
         source="ai",
         image_url=recipe.image_url,
     )
+    # ⚠️ unit 必须过 clean_unit：模型偶尔在单位里塞注释
+    #（实测「汤匙（即oyster-sauce）」17 个字），而 unit 列是 VARCHAR(16)。
+    # SQLite 不校验长度所以本地测不出来，生产库会 StringDataRightTruncation → 500。
     row.ingredients = [
         RecipeIngredient(
-            name=i.name, quantity=i.quantity, unit=i.unit, optional=i.optional
+            name=i.name,
+            quantity=i.quantity,
+            unit=clean_unit(i.unit),
+            optional=i.optional,
         )
         for i in recipe.ingredients
     ]
@@ -113,8 +154,14 @@ def _sync_row(row: Recipe, recipe: RecipeOut) -> None:
     row.tags = recipe.tags
     row.image_url = recipe.image_url
     # 整个列表替换；relationship 带 delete-orphan，旧食材行会被自动清掉
+    # 同上：unit 要清洗（这里是「更新已有行」那条路，也会写库）
     row.ingredients = [
-        RecipeIngredient(name=i.name, quantity=i.quantity, unit=i.unit, optional=i.optional)
+        RecipeIngredient(
+            name=i.name,
+            quantity=i.quantity,
+            unit=clean_unit(i.unit),
+            optional=i.optional,
+        )
         for i in recipe.ingredients
     ]
 
@@ -130,13 +177,21 @@ def _persist_or_update(db: Session, user_id: int, recipe: RecipeOut) -> Recipe:
     去重键用 name 而不是「食材组合」：同一道菜重做时用量会变，
     但用户心里的「番茄鸡蛋豆腐」始终是一道菜。
     """
-    # 查重范围是**全家可见的菜谱**，不是只有自己生成的。
-    # 否则妈妈生成过「番茄鸡蛋豆腐」、我再生成一次，列表里就会出现两张一样的卡片 ——
-    # 那正是之前修过的「同一道菜重复出现」，只不过换成了跨账号的版本。
+    # 查重范围是**全家可见的、用户自己的**菜谱，**不含系统内置**。
+    #
+    # 为什么不含内置：内置菜谱（user_id 为 NULL）是所有用户共用的。
+    # 如果查重时命中它，`_sync_row` 会把那条**全局记录**改写成
+    # 「这个用户刚生成的样子」（source 从 builtin 变成 ai，食材用量也跟着变），
+    # 等于一个用户的操作污染了所有人的菜品库。
+    #
+    # 所以：AI 生成出和内置菜谱同名的菜时，**新建一条用户自己的**。
+    # 界面上会看到两道同名的菜 —— 那是可接受的（一道是标准做法，
+    # 一道是他自己生成的版本），而且 `/generate` 的提示词里已经把
+    # 内置菜名列为「避开」，正常不会撞。
     existing = (
         db.query(Recipe)
         .filter(
-            Recipe.user_id.in_(visible_user_ids(db, user_id)),
+            editable_recipe_clause(db, user_id),
             Recipe.name == recipe.name,
         )
         .order_by(Recipe.id.desc())
@@ -162,20 +217,47 @@ def _ingredients_of(row: Recipe) -> list[RecipeIngredientOut]:
     ]
 
 
-def _load_visible_recipe(db: Session, user_id: int, recipe_id: int) -> Recipe:
-    """取一道**自己或家人**的菜谱，取不到就 404。
+def _load_readable_recipe(db: Session, user_id: int, recipe_id: int) -> Recipe:
+    """取一道**能看的**菜谱：系统内置 + 自己/家人。取不到就 404。
 
-    菜谱在家庭里是共享的：妈妈生成的菜，我也要能打开、能照着做。
+    家庭共享：妈妈生成的菜，我也要能打开、能照着做。
+    系统内置：菜品库那 192 道，所有用户都能打开。
     """
     row = (
         db.query(Recipe)
-        .filter(
-            Recipe.id == recipe_id,
-            Recipe.user_id.in_(visible_user_ids(db, user_id)),
-        )
+        .filter(Recipe.id == recipe_id, readable_recipe_clause(db, user_id))
         .one_or_none()
     )
     if row is None:
+        raise HTTPException(status_code=404, detail="菜谱不存在")
+    return row
+
+
+def _load_editable_recipe(db: Session, user_id: int, recipe_id: int) -> Recipe:
+    """取一道**能改的**菜谱：自己/家人。系统内置的给 403，不是 404。
+
+    ⚠️ 这里必须给 403 而不是 404。
+    内置菜谱用户**看得见**（详情页能打开），
+    所以对「删除」说「不存在」是自相矛盾的，用户会以为界面出错了。
+    说清楚「这是系统内置的，不能删」才是对的。
+    """
+    row = (
+        db.query(Recipe)
+        .filter(Recipe.id == recipe_id, editable_recipe_clause(db, user_id))
+        .one_or_none()
+    )
+    if row is None:
+        # 先确认它是不是「存在但不可改」（内置），能区分就说得更明白
+        exists = (
+            db.query(Recipe.id)
+            .filter(Recipe.id == recipe_id, readable_recipe_clause(db, user_id))
+            .first()
+        )
+        if exists:
+            raise HTTPException(
+                status_code=403,
+                detail="这是系统内置的菜谱，不能删除。你可以把它收藏起来，或者自己照着做。",
+            )
         raise HTTPException(status_code=404, detail="菜谱不存在")
     return row
 
@@ -216,6 +298,7 @@ def _row_to_out(row: Recipe) -> RecipeOut:
         nutrition=nutrition,
         tags=row.tags or [],
         image_url=image_url,
+        is_builtin=is_builtin(row),
         created_at=row.created_at,
     )
 
@@ -233,18 +316,31 @@ def generate(payload: RecipeGenerateRequest, user: CurrentUser, db: DbSession):
     #（番茄炒蛋 + 青椒鸡胸肉），列表卡在 3 道不动，
     # 用户感受就是「能生成的菜非常有限」。
     #
-    # 只取最近 30 个：菜谱攒多了以后，把上百个名字塞进提示词会拖慢生成，
-    # 而「别重复最近这些」已经足够解决问题。
-    exclude = [
+    # ⚠️ 范围要**同时**包含「系统内置」和「自己最近生成的」，两段分开取：
+    #
+    #   - 内置那 192 道必须全带上。用户点开就能看到它们，
+    #     如果 AI 又编一道「清炒西兰花」，列表里会出现两道同名菜 ——
+    #     一道是内置标准做法、一道是 AI 现编的，很难分辨。
+    #   - 自己最近 30 道。菜谱攒多了以后把上百个名字全塞进提示词会拖慢生成，
+    #     而「别重复最近这些」已经足够解决问题。
+    #
+    # 不能简单地「取最近 30 个 readable」：那样内置菜谱一多，
+    # 用户自己的菜名就会被挤出前 30，反而失去去重作用。
+    builtin_names = [
+        name
+        for (name,) in db.query(Recipe.name).filter(Recipe.user_id.is_(None)).all()
+    ]
+    own_names = [
         name
         for (name,) in (
             db.query(Recipe.name)
-            .filter(Recipe.user_id.in_(visible_user_ids(db, user.id)))
+            .filter(editable_recipe_clause(db, user.id))
             .order_by(Recipe.created_at.desc())
             .limit(30)
             .all()
         )
     ]
+    exclude = own_names + builtin_names
 
     recipes, model_name = generate_recipes(
         inventory=inventory,
@@ -279,9 +375,25 @@ def generate(payload: RecipeGenerateRequest, user: CurrentUser, db: DbSession):
 def list_recipes(
     user: CurrentUser,
     db: DbSession,
-    limit: int = Query(default=20, ge=1, le=100),
+    limit: int = Query(default=20, ge=1, le=200),
 ) -> list[RecipeOut]:
-    """菜谱列表。
+    """菜谱列表：**自己/家人生成的**。
+
+    ## 为什么不把菜品库那 192 道也放进来（试过，不成立）
+
+    一条完整菜谱（配料 + 步骤 + 营养）约 2.4KB，192 道就是 **482KB**。
+    生产库在 Supabase（孟买），把这些拉回来实测 **4 秒** ——
+    瓶颈是数据量而不是查询条数（整个接口只有 5 条 SQL）。
+    菜谱页是主 tab，进去卡 4 秒不可接受。
+
+    语义上也没必要：**菜品库的浏览入口是「推荐」标签** ——
+    它本来就是「按你冰箱里现有的食材挑出能做的菜」，
+    比在「全部」里平铺 192 道更贴合用户的问题。
+    点推荐卡 → 秒开完整做法（见 materialize），那条链路才是重点。
+
+    真要浏览整个菜品库，得单独做一个标签页，并且
+    ① 列表不返回 steps / ingredients（省掉 75% 体积）
+    ② 分页。那是另一件事。
 
     注意：这里**也要**用当前库存重算缺料，不能直接返回空列表。
     以前这里偷懒返回 missing_ingredients=[]，导致两个问题：
@@ -289,21 +401,31 @@ def list_recipes(
       2. 客户端按「缺料空不空」做的筛选形同虚设。
     顺带把 ready（食材已备齐）算出来，客户端据此把做完的菜弱化置底。
     """
+    # ⚠️ **顺序很重要：先取库存，再查菜谱。**
+    #
+    # `_load_inventory` 有可能 commit（刷新鲜度），而 commit 会让
+    # session 里**已经加载**的对象过期。菜谱要是先查出来，
+    # 后面每访问一道菜的字段都会各触发一次 SELECT ——
+    # 200 道菜 × 169ms（Supabase 孟买往返）实测 **74 秒**。
+    #
+    # 反过来先取库存就没这个问题：commit 发生在菜谱被加载之前。
+    inventory = _load_inventory(db, user.id)
+
     # 按菜名只取最新的一条。修复前反复点「生成新菜谱」攒下的重复行
     # 可能还留在库里（见 _persist_or_update 的说明），这里兜一层，
     # 保证界面上永远不会出现重复卡片。
     # 范围是全家的菜谱；按菜名分组去重也是跨账号的 ——
     # 妈妈和我各生成过一次同一道菜，列表里也只该出现一张卡片。
-    visible = visible_user_ids(db, user.id)
+    scope = editable_recipe_clause(db, user.id)
     latest_ids = (
         db.query(func.max(Recipe.id))
-        .filter(Recipe.user_id.in_(visible))
+        .filter(scope)
         .group_by(Recipe.name)
         .scalar_subquery()
     )
     rows = (
         db.query(Recipe)
-        .filter(Recipe.user_id.in_(visible), Recipe.id.in_(latest_ids))
+        .filter(scope, Recipe.id.in_(latest_ids))
         .order_by(Recipe.created_at.desc())
         .limit(limit)
         .all()
@@ -311,7 +433,6 @@ def list_recipes(
     if not rows:
         return []
 
-    inventory = _load_inventory(db, user.id)
     return [_with_availability(_row_to_out(r), inventory) for r in rows]
 
 
@@ -357,21 +478,33 @@ def recommend(
 def materialize(
     payload: RecipeMaterializeRequest, user: CurrentUser, db: DbSession
 ) -> RecipeOut:
-    """把菜品库里的一道菜「落实」成一条完整的菜谱（含步骤和营养）。
+    """取菜品库里某道菜的完整做法（含步骤和营养）。
 
-    ## 为什么要单独一个接口
+    ## 现在**不再调 AI**
 
-    菜品库（192 道）里只有「菜名 + 必需食材 + 配图」——
-    这些是人工整理的，准确而且免费。但**没有步骤和营养**，
-    所以推荐列表点进去会是空页面。
+    菜品库那 192 道菜的步骤、营养、配料，已经**离线生成一次**
+    并作为系统内置菜谱（`user_id` 为 NULL）写进数据库了 ——
+    见 `tools/generate-dish-recipes.py` + `tools/seed-dish-recipes.py`。
 
-    这 192 道菜如果全部预先用 AI 生成步骤，要跑 192 次调用（慢且贵），
-    而用户实际只会点开其中几道。所以改成**按需生成**。
+    所以这个接口现在的实际行为是：**按菜名去库里查一条内置菜谱，直接返回**。
+    点开就是秒开，也不消耗任何 AI 额度。
+
+    接口本身保留下来，是因为客户端还按「POST 一个菜名、拿回一条完整菜谱」
+    这个契约调用它，而且下面那段 AI 兜底还需要留着。
+
+    ## 为什么还留着 AI 兜底
+
+    万一某道菜在离线生成时失败了（模型抽风、网络断），
+    种子数据里就没有它。这时候**不能直接报错** ——
+    用户点了一道推荐菜却打不开，比多花一次 AI 调用糟得多。
+    所以查不到就现生成一条（并且只落给这个用户自己）。
+
+    实测离线生成 192 道后，这条兜底路径正常情况下不会走到。
 
     ## 幂等
 
-    已经生成过的菜**直接返回库里的那条**，不再调 AI ——
-    用户反复点同一道菜不会重复花钱，也不会在列表里攒出多行。
+    同一个用户反复点同一道菜，查到的都是同一条内置记录，不会重复花钱，
+    也不会在列表里攒出多行。
     """
     from app.services.dish_library import DISH_NAMES
 
@@ -382,20 +515,30 @@ def materialize(
     if name not in DISH_NAMES:
         raise HTTPException(status_code=404, detail=f"菜品库里没有「{name}」")
 
-    # ① 已经生成过 → 直接返回，不花钱
+    # ① 库里已有（内置的，或用户自己生成过的）→ 直接返回，不调 AI
+    #
+    # ⚠️ **优先取内置的那份**（`user_id IS NULL` 排前面）。
+    #
+    # 为什么不是优先用户自己的：Ethan 明确要求「不要每次点开都 AI 现场生成的，
+    # 要本来就现成的」。用户库里可能留着一份**更早用 AI 生成的同名菜**
+    #（那正是以前 materialize 现场生成留下的），内容不如离线整理过的好。
+    # 优先内置才能保证「点任何一道推荐菜，拿到的都是菜品库那份」。
+    #
+    # 用户自己那份不会消失 —— 它还在「全部」列表里，是他自己的记录。
     existing = (
         db.query(Recipe)
         .filter(
-            Recipe.user_id.in_(visible_user_ids(db, user.id)),
+            readable_recipe_clause(db, user.id),
             Recipe.name == name,
         )
+        .order_by(Recipe.user_id.is_(None).desc(), Recipe.id.desc())
         .first()
     )
     if existing is not None:
         inventory = _load_inventory(db, user.id)
         return _with_availability(_row_to_out(existing), inventory)
 
-    # ② 没生成过 → 调 AI 生成这一道
+    # ② 库里没有（离线生成时漏掉的）→ 现生成一条，只落给这个用户
     _guard_write(db, user.id)
     inventory, expiring, pref, health = _load_context(db, user.id)
 
@@ -421,7 +564,7 @@ def materialize(
 
 @router.get("/{recipe_id}", response_model=RecipeOut, summary="菜谱详情")
 def get_recipe(recipe_id: int, user: CurrentUser, db: DbSession) -> RecipeOut:
-    row = _load_visible_recipe(db, user.id, recipe_id)
+    row = _load_readable_recipe(db, user.id, recipe_id)
 
     # 详情页要用当前库存重算缺料，避免用户已经买回来了还显示缺
     inventory = _load_inventory(db, user.id)
@@ -441,7 +584,7 @@ def get_cook_plan(recipe_id: int, user: CurrentUser, db: DbSession) -> CookPlan:
     不能点一下按钮就闷头扣，得先让用户看见「会用掉什么、各多少」，
     能改数字，再确认。取消就什么都不动。
     """
-    row = _load_visible_recipe(db, user.id, recipe_id)
+    row = _load_readable_recipe(db, user.id, recipe_id)
     inventory = _load_inventory(db, user.id)
     return build_cook_plan(
         recipe_id=row.id,
@@ -465,7 +608,7 @@ def cook_recipe(
     传空列表 `[]` 是有意义的 —— 表示「我做了这道菜，但不想改库存」，
     这时候只记行为、不动库存。
     """
-    row = _load_visible_recipe(db, user.id, recipe_id)
+    row = _load_readable_recipe(db, user.id, recipe_id)
     inventory = _load_inventory(db, user.id)
     plan = build_cook_plan(
         recipe_id=row.id,
@@ -567,9 +710,14 @@ def cook_recipe(
 @router.delete("/{recipe_id}", status_code=status.HTTP_204_NO_CONTENT, summary="删除菜谱")
 def delete_recipe(recipe_id: int, user: CurrentUser, db: DbSession) -> None:
     """删一道菜谱。**家人生成的也能删** —— 菜谱列表是全家共享的，
-    看得见却删不掉会让人以为按钮坏了。只读成员除外。"""
+    看得见却删不掉会让人以为按钮坏了。只读成员除外。
+
+    ⚠️ **系统内置的不能删**（`_load_editable_recipe` 会给 403）。
+    内置菜谱是所有用户共用的一条记录，删一次全都没了。
+    客户端那边靠 `RecipeOut.is_builtin` 把这个按钮藏起来。
+    """
     _guard_write(db, user.id)
-    row = _load_visible_recipe(db, user.id, recipe_id)
+    row = _load_editable_recipe(db, user.id, recipe_id)
     db.delete(row)
     db.commit()
 
@@ -578,7 +726,7 @@ def delete_recipe(recipe_id: int, user: CurrentUser, db: DbSession) -> None:
 def submit_feedback(payload: MealActionRequest, user: CurrentUser, db: DbSession) -> dict:
     # 家人生成的菜也要能反馈 —— 收藏 / 做过 / 跳过记的是**我自己的**口味，
     # 属于个人数据，所以只读成员也能用（不拦 _guard_write）。
-    row = _load_visible_recipe(db, user.id, payload.recipe_id)
+    row = _load_readable_recipe(db, user.id, payload.recipe_id)
 
     db.add(
         MealHistory(
