@@ -148,9 +148,10 @@ def candidate_keys(
     """按优先级列出候选图片 key（不去磁盘检查）。
 
     顺序即优先级：
-        1. 菜名命中的具体菜品
-        2. 菜名 / 食材命中的主食材
-        3. default 兜底
+        1. **菜品库精确匹配**（192 道家常菜，每道一张专属图）
+        2. 旧 DISH_RULES（MOCK 内置菜 + 早期的高频菜）
+        3. 菜名 / 食材命中的主食材
+        4. default 兜底
     已经去重，且保持顺序。
     """
     dish = _normalize(name)
@@ -158,19 +159,30 @@ def candidate_keys(
 
     out: list[str] = []
 
-    # 第 1 层：菜名 → 具体菜品
+    # 第 1 层：菜品库精确匹配
+    #
+    # 192 道家常菜每道都有自己的图，比「按关键词猜一个主食材」准得多。
+    # 放在最前面：比如「西红柿炒鸡蛋」应该用它的专属图，
+    # 而不是被后面的「番茄」规则抢去用一张生番茄的照片。
+    from app.services.dish_library import DISH_NAMES
+
+    key = DISH_NAMES.get(name) or DISH_NAMES.get(name.strip())
+    if key:
+        out.append(key)
+
+    # 第 2 层：旧规则表 → 具体菜品
     key = _match(DISH_RULES, dish)
     if key:
         out.append(key)
 
-    # 第 2 层：菜名 + 食材 → 主食材
+    # 第 3 层：菜名 + 食材 → 主食材
     # 先只看菜名（菜名里的关键词比配料表更贴近成品的样子），
     # 菜名里没有线索时再看食材清单。
     key = _match(INGREDIENT_RULES, dish) or _match(INGREDIENT_RULES, ingredients)
     if key:
         out.append(key)
 
-    # 第 3 层：兜底
+    # 第 4 层：兜底
     out.append(DEFAULT_KEY)
 
     # 去重但保序（同一张图可能在两层都被命中）
