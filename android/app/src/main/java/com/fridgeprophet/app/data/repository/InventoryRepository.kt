@@ -5,6 +5,10 @@ import com.fridgeprophet.app.core.safeApiCall
 import com.fridgeprophet.app.data.remote.FridgeApi
 import com.fridgeprophet.app.data.remote.dto.AiStatus
 import com.fridgeprophet.app.data.remote.dto.ExpiringItem
+import com.fridgeprophet.app.data.remote.dto.FoodCategoryCreate
+import com.fridgeprophet.app.data.remote.dto.FoodCategoryItems
+import com.fridgeprophet.app.data.remote.dto.FoodCategoryOut
+import com.fridgeprophet.app.data.remote.dto.FoodCategoryUpdate
 import com.fridgeprophet.app.data.remote.dto.InventoryCreate
 import com.fridgeprophet.app.data.remote.dto.InventoryOut
 import com.fridgeprophet.app.data.remote.dto.InventoryStats
@@ -50,4 +54,30 @@ class InventoryRepository @Inject constructor(private val api: FridgeApi) {
         safeApiCall { api.confirmScan(ScanConfirmRequest(foods)) }
 
     suspend fun aiStatus(): ApiResult<AiStatus> = safeApiCall { api.aiStatus() }
+
+    // ---------- 自定义折叠箱 ----------
+
+    suspend fun categories(): ApiResult<List<FoodCategoryOut>> =
+        safeApiCall { api.foodCategories() }
+
+    suspend fun createCategory(name: String, inventoryIds: List<Int> = emptyList()):
+        ApiResult<FoodCategoryOut> =
+        safeApiCall { api.createFoodCategory(FoodCategoryCreate(name, inventoryIds)) }
+
+    suspend fun renameCategory(id: Int, name: String): ApiResult<FoodCategoryOut> =
+        safeApiCall { api.updateFoodCategory(id, FoodCategoryUpdate(name = name)) }
+
+    suspend fun deleteCategory(id: Int): ApiResult<Unit> =
+        safeApiCall { api.deleteFoodCategory(id); Unit }
+
+    suspend fun addToCategory(id: Int, inventoryIds: List<Int>): ApiResult<FoodCategoryOut> =
+        safeApiCall { api.addFoodCategoryItems(id, FoodCategoryItems(inventoryIds)) }
+
+    /**
+     * 把食材移出折叠箱。
+     *
+     * ⚠️ **不删食材** —— 只是解除归组，食材留在冰箱里。
+     */
+    suspend fun removeFromCategory(id: Int, inventoryId: Int): ApiResult<FoodCategoryOut> =
+        safeApiCall { api.removeFoodCategoryItem(id, inventoryId) }
 }

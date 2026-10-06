@@ -806,3 +806,36 @@ data class PublicProfileOut(
 
 @Serializable
 data class ImageUploadOut(val url: String)
+
+// ---------- 自定义折叠箱 ----------
+
+/**
+ * 一个用户自定义的折叠箱。
+ *
+ * `inventoryIds` 是箱子里的食材 id。客户端拿它和冰箱列表做交集，
+ * 比再查一次接口简单，也不会出现两份数据不同步。
+ */
+@Serializable
+data class FoodCategoryOut(
+    val id: Int,
+    val name: String,
+    @SerialName("sort_order") val sortOrder: Int = 0,
+    @SerialName("inventory_ids") val inventoryIds: List<Int> = emptyList(),
+)
+
+@Serializable
+data class FoodCategoryCreate(
+    val name: String,
+    @SerialName("inventory_ids") val inventoryIds: List<Int> = emptyList(),
+)
+
+@Serializable
+data class FoodCategoryUpdate(
+    val name: String? = null,
+    @SerialName("sort_order") val sortOrder: Int? = null,
+)
+
+@Serializable
+data class FoodCategoryItems(
+    @SerialName("inventory_ids") val inventoryIds: List<Int>,
+)

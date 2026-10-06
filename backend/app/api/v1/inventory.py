@@ -219,6 +219,40 @@ def inventory_stats(user: CurrentUser, db: DbSession) -> dict:
     }
 
 
+@router.get("/categories", summary="食材分类列表（含显示顺序）")
+def list_categories(user: CurrentUser, db: DbSession) -> dict:
+    """返回全部分类和它们的显示顺序。
+
+    ## 为什么客户端要单独问一次
+
+    分类顺序（蔬菜在前、「其他」垫底）只在
+    `ingredient_category.CATEGORIES` 里定义了一次。
+    如果客户端自己写一份，两边迟早不一致 ——
+    改了后端忘了改客户端，用户看到的分组顺序就会很怪。
+
+    这和「跨用户可见范围只能有一处定义」是同一个原则
+    （见 MEMORY.md 铁律 9）。
+
+    顺便返回每个分类下**当前有多少样食材**，客户端可以先画分组骨架
+    再填内容，避免分组标题闪一下才出现。
+    """
+    from app.services.ingredient_category import CATEGORIES
+
+    counts: dict[str, int] = {c: 0 for c in CATEGORIES}
+    rows = db.query(FoodInventory).filter(
+        FoodInventory.user_id.in_(_visible(db, user.id))
+    ).all()
+    for item in rows:
+        c = resolve_category(item.food_name, item.category)
+        counts[c] = counts.get(c, 0) + 1
+
+    return {
+        "categories": [
+            {"name": c, "count": counts.get(c, 0)} for c in CATEGORIES
+        ],
+    }
+
+
 @router.post("", response_model=InventoryOut, status_code=status.HTTP_201_CREATED,
              summary="手动添加食材")
 def create_item(payload: InventoryCreate, user: CurrentUser, db: DbSession) -> InventoryOut:

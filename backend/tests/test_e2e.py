@@ -26,6 +26,20 @@ _DB_FILE.unlink(missing_ok=True)
 os.environ["DATABASE_URL"] = f"sqlite:///{_DB_FILE.as_posix()}"
 os.environ["DASHSCOPE_API_KEY"] = ""
 
+# ⚠️ **强制关掉 SMTP，让验证码走日志。**
+#
+# 测试里注册几十个账号，每个都要验证码。如果沿用 .env 里配好的真实 SMTP：
+#   1. 会真的往 demo@fridge.com 这种假地址发几十封邮件；
+#   2. 服务商（163/QQ）会因为「向不存在的地址群发」触发风控，
+#      把正常注册也一起限流；
+#   3. 测试还拿不到验证码（它只从日志捞），全挂。
+#
+# 置空这三个变量，email_service 会退回开发模式：验证码打到日志里。
+# 这也是「不配 SMTP 也能跑」这个设计的价值 —— 测试环境天然适用。
+os.environ["SMTP_HOST"] = ""
+os.environ["SMTP_USER"] = ""
+os.environ["SMTP_PASSWORD"] = ""
+
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app.main import app  # noqa: E402
@@ -1221,6 +1235,19 @@ def main() -> int:
         check("解散后 joined 变回 false", r.json().get("joined") is False, r.text[:200])
 
         print("\n=== 17c. 自定义折叠箱 ===")
+        # 分类顺序只在 ingredient_category.CATEGORIES 里定义一次，
+        # 客户端通过这个接口拿 —— 别让客户端自己写一份，两边迟早不一致。
+        r = client.get("/api/v1/inventory/categories", headers=headers)
+        check("分类列表接口可用", r.status_code == 200, r.text[:200])
+        cats = r.json().get("categories", [])
+        check("返回 12 个分类", len(cats) == 12, f"实际 {len(cats)}")
+        check("第一个是「蔬菜」（显示顺序）",
+              cats and cats[0]["name"] == "蔬菜", str(cats[:2])[:200])
+        check("最后一个是「其他」（垫底）",
+              cats and cats[-1]["name"] == "其他", str(cats[-2:])[:200])
+        check("每个分类都带 count 字段",
+              all("count" in c for c in cats), str(cats[:2])[:200])
+
         # 先备几样食材，不依赖前面几节留下的状态
         box_items = []
         for name, qty, unit in (("猪肉", 2, "块"), ("牛肉", 1, "块"), ("金针菇", 2, "把")):

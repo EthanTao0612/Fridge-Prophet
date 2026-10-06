@@ -34,6 +34,10 @@ import com.fridgeprophet.app.data.remote.dto.InventoryCreate
 import com.fridgeprophet.app.data.remote.dto.InventoryOut
 import com.fridgeprophet.app.data.remote.dto.InventoryStats
 import com.fridgeprophet.app.data.remote.dto.InventoryUpdate
+import com.fridgeprophet.app.data.remote.dto.FoodCategoryCreate
+import com.fridgeprophet.app.data.remote.dto.FoodCategoryItems
+import com.fridgeprophet.app.data.remote.dto.FoodCategoryOut
+import com.fridgeprophet.app.data.remote.dto.FoodCategoryUpdate
 import com.fridgeprophet.app.data.remote.dto.LoginRequest
 import com.fridgeprophet.app.data.remote.dto.MealActionRequest
 import com.fridgeprophet.app.data.remote.dto.PreferenceInsights
@@ -113,6 +117,41 @@ interface FridgeApi {
 
     @GET("api/v1/auth/me")
     suspend fun me(): UserOut
+
+    // ---------- 自定义折叠箱 ----------
+
+    @GET("api/v1/food-categories")
+    suspend fun foodCategories(): List<FoodCategoryOut>
+
+    @POST("api/v1/food-categories")
+    suspend fun createFoodCategory(@Body body: FoodCategoryCreate): FoodCategoryOut
+
+    @PATCH("api/v1/food-categories/{id}")
+    suspend fun updateFoodCategory(
+        @Path("id") id: Int,
+        @Body body: FoodCategoryUpdate,
+    ): FoodCategoryOut
+
+    @DELETE("api/v1/food-categories/{id}")
+    suspend fun deleteFoodCategory(@Path("id") id: Int)
+
+    @POST("api/v1/food-categories/{id}/items")
+    suspend fun addFoodCategoryItems(
+        @Path("id") id: Int,
+        @Body body: FoodCategoryItems,
+    ): FoodCategoryOut
+
+    /**
+     * 把食材移出折叠箱。
+     *
+     * ⚠️ 这是「移出箱子」，**不是删食材** —— 食材本身留在冰箱里。
+     * 后端就是这么实现的，客户端别搞混。
+     */
+    @DELETE("api/v1/food-categories/{id}/items/{itemId}")
+    suspend fun removeFoodCategoryItem(
+        @Path("id") id: Int,
+        @Path("itemId") itemId: Int,
+    ): FoodCategoryOut
 
     // ---------- 用户画像 ----------
 
