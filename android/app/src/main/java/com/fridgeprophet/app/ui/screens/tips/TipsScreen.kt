@@ -18,9 +18,11 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -89,39 +91,114 @@ fun TipsScreen(
                     description = state.error ?: "换个筛选条件试试",
                 )
 
-                else -> LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    item {
-                        FilterSection(
-                            categories = state.categories,
-                            verdicts = state.verdicts,
-                            selectedCategory = state.category,
-                            selectedVerdict = state.verdict,
-                            onSelectCategory = viewModel::selectCategory,
-                            onSelectVerdict = viewModel::selectVerdict,
+                else -> {
+                    val visible = viewModel.visibleItems()
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        // 搜索框**固定在顶部**，不跟着列表滚。
+                        // 89 条贴士滚到一半想换个词搜，还要滑回顶部就很烦。
+                        TipSearchBar(
+                            query = state.query,
+                            onQueryChange = viewModel::setQuery,
+                            modifier = Modifier.padding(
+                                start = 16.dp, end = 16.dp, top = 8.dp, bottom = 4.dp,
+                            ),
                         )
-                    }
 
-                    item {
-                        Text(
-                            text = "共 ${state.items.size} 条",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
+                        if (visible.isEmpty()) {
+                            // 区分两种「没结果」：搜不到，还是被筛掉了。
+                            // 后者是用户自己忘了还开着分类筛选，提示他清掉就行 ——
+                            // 不这么做用户会以为「这个应用里没有这条」。
+                            EmptyState(
+                                title = "没找到相关贴士",
+                                description = if (viewModel.hasFilter()) {
+                                    "当前筛选条件下没有匹配。点上面「分类」和「结论」里的「全部」清掉筛选再试。"
+                                } else {
+                                    "换个词试试，比如「冰箱」「发芽」「亚硝酸盐」「痛风」"
+                                },
+                            )
+                        } else {
+                            LazyColumn(
+                                modifier = Modifier.fillMaxSize(),
+                                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                                verticalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                item {
+                                    FilterSection(
+                                        categories = state.categories,
+                                        verdicts = state.verdicts,
+                                        selectedCategory = state.category,
+                                        selectedVerdict = state.verdict,
+                                        onSelectCategory = viewModel::selectCategory,
+                                        onSelectVerdict = viewModel::selectVerdict,
+                                    )
+                                }
 
-                    items(state.items, key = { it.id }) { tip ->
-                        TipListCard(tip = tip, onClick = { onOpenTip(tip.id) })
-                    }
+                                item {
+                                    Text(
+                                        text = if (viewModel.isSearching()) {
+                                            "找到 ${visible.size} 条"
+                                        } else {
+                                            "共 ${visible.size} 条"
+                                        },
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
 
-                    item { Box(Modifier.padding(bottom = 24.dp)) }
+                                items(visible, key = { it.id }) { tip ->
+                                    TipListCard(tip = tip, onClick = { onOpenTip(tip.id) })
+                                }
+
+                                item { Box(Modifier.padding(bottom = 24.dp)) }
+                            }
+                        }
+                    }
                 }
             }
         }
     }
+}
+
+/**
+ * 贴士搜索框。
+ *
+ * 用 `OutlinedTextField` 而不是自绘：输入法、光标、长按选择这些
+ * 交给系统组件处理，自己写容易在中文输入法上出问题（拼音未上屏时
+ * 就被当成删除、光标跳到开头之类）。
+ *
+ * ⚠️ 过滤是**即时的**（每敲一个字就重算），没有防抖。
+ * 因为这是纯内存过滤，89 条算一次是微秒级；
+ * 加防抖反而会让输入和结果不同步，感觉更迟钝。
+ * 如果以后贴士涨到几千条，再考虑防抖或改后端搜索。
+ */
+@Composable
+private fun TipSearchBar(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    OutlinedTextField(
+        value = query,
+        onValueChange = onQueryChange,
+        modifier = modifier.fillMaxWidth(),
+        singleLine = true,
+        placeholder = { Text("搜一搜，比如「发芽」「隔夜」「孕妇」") },
+        leadingIcon = {
+            Icon(
+                painter = painterResource(R.drawable.ic_action_search),
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        },
+        trailingIcon = {
+            // 有内容才显示「清除」，空的时候显示它是噪音
+            if (query.isNotEmpty()) {
+                TextButton(onClick = { onQueryChange("") }) { Text("清除") }
+            }
+        },
+        shape = RoundedCornerShape(14.dp),
+        textStyle = MaterialTheme.typography.bodyMedium,
+    )
 }
 
 @Composable

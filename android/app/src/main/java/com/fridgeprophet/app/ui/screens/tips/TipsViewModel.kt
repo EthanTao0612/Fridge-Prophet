@@ -24,6 +24,8 @@ data class TipsUiState(
     val category: String? = null,
     /** 当前选中的结论，null 表示「全部」 */
     val verdict: String? = null,
+    /** 搜索关键词。**只在客户端过滤**，见 visibleItems() 的说明 */
+    val query: String = "",
     val error: String? = null,
 )
 
@@ -72,6 +74,47 @@ class TipsViewModel @Inject constructor(
         _state.update { it.copy(verdict = if (it.verdict == verdict) null else verdict) }
         load()
     }
+
+    fun setQuery(query: String) = _state.update { it.copy(query = query) }
+
+    /**
+     * 按关键词过滤当前列表。
+     *
+     * ## 为什么在客户端过滤，不发给后端
+     *
+     * 89 条贴士的标题 + 摘要只有几十 KB，**已经全在内存里了**。
+     * 本地过滤是即时的、不依赖网络，打字时不会一卡一卡。
+     * 发给后端反而要多等一次往返（生产库在孟买，单次约 169ms），
+     * 输入框会明显发顿 —— 这是个只有几个字的查询，不值得一次网络请求。
+     *
+     * ## 为什么只搜标题和摘要，不搜正文
+     *
+     * 正文（detail）不在列表接口的返回里，搜它就得把 89 条正文全下下来
+     *（几十倍的数据量）。而且用户搜索时的心理模型是「标题里有没有这个词」，
+     * 命中正文反而会给出看起来不相关的结果。想找正文内容，
+     * 点进详情页用浏览器/系统的页内查找更合适。
+     *
+     * ## 和分类/结论筛选的关系
+     *
+     * 关键词是在**当前筛选结果之上**再过滤，不是覆盖它。
+     * 这样行为可预期：屏幕上显示的就是筛选后的集合。
+     * 代价是「选了分类再搜索可能搜不到」——
+     * 界面在 0 结果时会提示清掉筛选（见 TipsScreen）。
+     */
+    fun visibleItems(): List<FoodTipSummary> {
+        val q = _state.value.query.trim()
+        if (q.isEmpty()) return _state.value.items
+        return _state.value.items.filter { tip ->
+            tip.title.contains(q, ignoreCase = true) ||
+                tip.summary.contains(q, ignoreCase = true)
+        }
+    }
+
+    /** 当前有没有在搜索 —— 界面据此决定 0 结果时提示什么 */
+    fun isSearching(): Boolean = _state.value.query.isNotBlank()
+
+    /** 当前有没有选分类/结论 */
+    fun hasFilter(): Boolean = _state.value.category != null || _state.value.verdict != null
 }
 
 data class TipDetailUiState(
