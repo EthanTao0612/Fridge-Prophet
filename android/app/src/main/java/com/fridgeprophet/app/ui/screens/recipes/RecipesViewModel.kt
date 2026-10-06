@@ -4,9 +4,11 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.fridgeprophet.app.core.ApiResult
 import com.fridgeprophet.app.core.DataRefreshBus
+import com.fridgeprophet.app.data.remote.dto.DishRecommendation
 import com.fridgeprophet.app.data.remote.dto.RecipeOut
 import com.fridgeprophet.app.data.repository.RecipeRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -17,11 +19,15 @@ import javax.inject.Inject
 data class RecipesUiState(
     val loading: Boolean = true,
     val recipes: List<RecipeOut> = emptyList(),
+    /** 内置菜品库的推荐（按冰箱现有食材匹配，毫秒级、不花钱） */
+    val recommendations: List<DishRecommendation> = emptyList(),
+    val readyCount: Int = 0,
+    val loadingRecommend: Boolean = false,
     val generating: Boolean = false,
     val error: String? = null,
     val info: String? = null,
     /** 快捷筛选，见 filters */
-    val filter: String = "全部",
+    val filter: String = "推荐",
 )
 
 @HiltViewModel
@@ -33,7 +39,15 @@ class RecipesViewModel @Inject constructor(
     private val _state = MutableStateFlow(RecipesUiState())
     val state: StateFlow<RecipesUiState> = _state.asStateFlow()
 
-    val filters = listOf("全部", "待采购", "现在能做", "15 分钟内", "消耗临期")
+    /**
+     * 「推荐」放第一个并作为默认。
+     *
+     * 理由：打开菜谱页最常见的诉求是「我今天能做什么」——
+     * 这个问题**查库就能立刻回答**（毫秒级、不花钱、菜品有专属配图）。
+     * 而 AI 生成要等 20 秒，不该是用户看到的第一屏。
+     * 想看 AI 编的新花样，点「全部」或「AI 生成」就行。
+     */
+    val filters = listOf("推荐", "全部", "待采购", "现在能做", "15 分钟内", "消耗临期")
 
     init {
         load()
@@ -49,11 +63,31 @@ class RecipesViewModel @Inject constructor(
     fun load(silent: Boolean = false) {
         if (!silent) _state.update { it.copy(loading = true, error = null) }
         viewModelScope.launch {
+            // 推荐和已生成菜谱**并发拉**。
+            // 生产库在孟买（单次往返 169ms），串行就是白白多等一次。
+            val recDeferred = async {
+                _state.update { it.copy(loadingRecommend = true) }
+                repository.recommend()
+            }
+
             when (val result = repository.list()) {
                 is ApiResult.Success ->
                     _state.update { it.copy(loading = false, recipes = result.data, error = null) }
                 is ApiResult.Failure ->
                     _state.update { it.copy(loading = false, error = result.message) }
+            }
+
+            // 推荐是次要信息，到了再更新（不阻塞已生成菜谱的显示）
+            when (val rec = recDeferred.await()) {
+                is ApiResult.Success -> _state.update {
+                    it.copy(
+                        loadingRecommend = false,
+                        recommendations = rec.data.dishes,
+                        readyCount = rec.data.readyCount,
+                    )
+                }
+                // 推荐拉失败不影响看已生成的菜谱 —— 只在界面上留空
+                is ApiResult.Failure -> _state.update { it.copy(loadingRecommend = false) }
             }
         }
     }
@@ -107,6 +141,8 @@ class RecipesViewModel @Inject constructor(
      * 用卡片上的「已备齐 / 缺 N 样」标签做区分就够了。
      */
     fun visibleRecipes(): List<RecipeOut> = when (_state.value.filter) {
+        // 「推荐」显示的是菜品库，不是已生成的菜谱 —— 由 isRecommendTab 分流
+        "推荐" -> emptyList()
         // 「待采购」= 还缺东西的
         "待采购" -> _state.value.recipes.filter { !it.ready }
         // 「现在能做」= 食材已备齐，打开冰箱就能开火
@@ -115,4 +151,9 @@ class RecipesViewModel @Inject constructor(
         "消耗临期" -> _state.value.recipes.filter { it.usesExpiring.isNotEmpty() }
         else -> _state.value.recipes
     }
+
+    /** 当前是不是「推荐」标签 —— 界面据此决定渲染推荐卡片还是菜谱卡片 */
+    fun isRecommendTab(): Boolean = _state.value.filter == "推荐"
+
+    fun visibleRecommendations(): List<DishRecommendation> = _state.value.recommendations
 }

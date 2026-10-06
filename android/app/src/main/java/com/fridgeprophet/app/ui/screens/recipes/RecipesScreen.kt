@@ -39,6 +39,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.fridgeprophet.app.data.remote.dto.DishRecommendation
 import com.fridgeprophet.app.data.remote.dto.RecipeOut
 import com.fridgeprophet.app.ui.components.EmptyState
 import com.fridgeprophet.app.ui.components.FoodImage
@@ -122,6 +123,40 @@ fun RecipesScreen(
         }
 
         when {
+            // ①「推荐」标签：显示内置菜品库（按冰箱现有食材匹配出来的）
+            //
+            // 放在最前面并作为默认标签：打开菜谱页最常见的诉求是
+            // 「我今天能做什么」—— 这个问题**查库就能立刻回答**
+            //（毫秒级、不花钱、菜品有专属配图）。AI 生成要等 20 秒，
+            // 不该是用户看到的第一屏。
+            viewModel.isRecommendTab() -> {
+                val recs = viewModel.visibleRecommendations()
+                when {
+                    state.loadingRecommend -> LoadingBox()
+                    recs.isEmpty() -> EmptyState(
+                        title = "还没有能推荐的菜",
+                        description = "先去冰箱页加几样食材 —— 这里会立刻告诉你能做什么，不用等 AI",
+                    )
+                    else -> LazyColumn(
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        item {
+                            Text(
+                                text = "根据你冰箱里的食材，有 ${state.readyCount} 道现在就能做",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(start = 4.dp, bottom = 2.dp),
+                            )
+                        }
+                        items(items = recs, key = { it.name }) { dish ->
+                            DishCard(dish)
+                        }
+                        item { Box(Modifier.height(24.dp)) }
+                    }
+                }
+            }
+
             state.loading -> LoadingBox()
             visible.isEmpty() -> EmptyState(
                 title = if (state.recipes.isEmpty()) "还没有菜谱" else "这个筛选下没有菜谱",
@@ -305,6 +340,70 @@ fun RecipeCard(
                 modifier = Modifier
                     .size(88.dp)
                     .clip(RoundedCornerShape(12.dp)),
+            )
+        }
+    }
+}
+
+/**
+ * 推荐卡片：**左侧文字、右侧小图**（和 RecipeCard 同一套视觉语言）。
+ *
+ * 和 `RecipeCard` 分开写而不是加参数复用：两者数据源完全不同
+ *（一个是数据库里的 RecipeOut、一个是菜品库的 DishRecommendation），
+ * 字段和交互都不一样。硬塞进一个 composable 会让两边都变复杂。
+ *
+ * ⚠️ 目前**不可点**。推荐菜只是「菜品库里收录了这道菜」，
+ * 数据库里还没有它的步骤和营养 —— 点进去会是空页面。
+ * 下一步做「照着这道菜生成详情」再让它可点。
+ */
+@Composable
+private fun DishCard(dish: DishRecommendation) {
+    SectionCard {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = dish.name,
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    // 能做的用主色、差一点的用次要色 —— 一眼能扫出哪些马上能开火
+                    Text(
+                        text = if (dish.ready) "现在能做" else "缺 ${dish.missing.size} 样",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (dish.ready) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                    )
+                }
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text = dish.category,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (dish.missing.isNotEmpty()) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = "还缺：" + dish.missing.joinToString("、"),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+            FoodImage(
+                imageUrl = dish.imageUrl,
+                name = dish.name,
+                modifier = Modifier
+                    .size(88.dp)
+                    .clip(RoundedCornerShape(14.dp)),
             )
         }
     }

@@ -36,6 +36,7 @@ import com.fridgeprophet.app.data.remote.dto.InventoryStats
 import com.fridgeprophet.app.data.remote.dto.InventoryUpdate
 import com.fridgeprophet.app.data.remote.dto.CategoryListResponse
 import com.fridgeprophet.app.data.remote.dto.FoodCategoryCreate
+import com.fridgeprophet.app.data.remote.dto.RecommendResponse
 import com.fridgeprophet.app.data.remote.dto.FoodCategoryItems
 import com.fridgeprophet.app.data.remote.dto.FoodCategoryOut
 import com.fridgeprophet.app.data.remote.dto.FoodCategoryUpdate
@@ -276,6 +277,13 @@ interface FridgeApi {
 
     @GET("api/v1/recipes")
     suspend fun listRecipes(@Query("limit") limit: Int = 20): List<RecipeOut>
+
+    /** 按冰箱现有食材推荐能做的菜（查库，毫秒级、不花钱） */
+    @GET("api/v1/recipes/recommend")
+    suspend fun recommendRecipes(
+        @Query("limit") limit: Int = 30,
+        @Query("category") category: String? = null,
+    ): RecommendResponse
 
     @GET("api/v1/recipes/{id}")
     suspend fun getRecipe(@Path("id") id: Int): RecipeOut

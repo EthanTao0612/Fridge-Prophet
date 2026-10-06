@@ -856,3 +856,27 @@ data class CategoryCount(
 data class CategoryListResponse(
     val categories: List<CategoryCount> = emptyList(),
 )
+
+// ---------- 内置菜品库推荐 ----------
+
+/**
+ * 一道推荐菜。
+ *
+ * `ready` = 必需食材全有；`missing` 是还缺哪些（**中文名**，直接显示给用户）。
+ */
+@Serializable
+data class DishRecommendation(
+    val name: String,
+    val category: String = "",
+    @SerialName("image_url") val imageUrl: String? = null,
+    val ready: Boolean = false,
+    val matched: List<String> = emptyList(),
+    val missing: List<String> = emptyList(),
+)
+
+@Serializable
+data class RecommendResponse(
+    val total: Int = 0,
+    @SerialName("ready_count") val readyCount: Int = 0,
+    val dishes: List<DishRecommendation> = emptyList(),
+)

@@ -10,6 +10,7 @@ import com.fridgeprophet.app.data.remote.dto.CookResult
 import com.fridgeprophet.app.data.remote.dto.MealActionRequest
 import com.fridgeprophet.app.data.remote.dto.RecipeGenerateRequest
 import com.fridgeprophet.app.data.remote.dto.RecipeGenerateResponse
+import com.fridgeprophet.app.data.remote.dto.RecommendResponse
 import com.fridgeprophet.app.data.remote.dto.RecipeOut
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -59,4 +60,8 @@ class RecipeRepository @Inject constructor(private val api: FridgeApi) {
     ): ApiResult<CookResult> = safeApiCall {
         api.cookRecipe(id, CookRequest(deductions = deductions))
     }
+
+    /** 按冰箱现有食材推荐能做的菜。查库，毫秒级、不花钱。 */
+    suspend fun recommend(limit: Int = 40): ApiResult<RecommendResponse> =
+        safeApiCall { api.recommendRecipes(limit = limit) }
 }
