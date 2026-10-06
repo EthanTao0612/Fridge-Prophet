@@ -41,6 +41,7 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND_DIR))
 
 from app.services.ingredient_image_service import (  # noqa: E402
+    _exists,
     EXTRA_ALIASES,
     GUARD_RULES,
     KEYWORD_RULES,
@@ -140,6 +141,32 @@ def main() -> int:
     for name in EXTRA_ALIASES:
         got = resolve_ingredient_key(name)
         check(f"{name} -> {EXTRA_ALIASES[name]}", got, EXTRA_ALIASES[name])
+
+    print("\n=== 6b. ⚠️ 别名的值必须是图片 key，不能是中文名 ===")
+    # 这个错犯过三次：酸笋->酸菜、椰蓉->椰子、香椿->香椿芽。
+    # 每次都是「看起来配好了」，实际指向一个不存在的 key，
+    # 静默退到万能图 —— 不报错，很难发现。
+    import re as _re
+
+    bad_targets = [
+        f"{k} -> {v}" for k, v in EXTRA_ALIASES.items()
+        if not _re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", v)
+    ]
+    check("EXTRA_ALIASES 的值都是合法的 key（小写字母数字短横线）", bad_targets, [])
+
+    bad_guard = [
+        f"{kws[0]} -> {v}" for kws, v in GUARD_RULES
+        if not _re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", v)
+    ]
+    check("GUARD_RULES 的值都是合法的 key", bad_guard, [])
+
+    # 值指向的 key 必须真的有图（或者明确是「故意没图」的占位 key）
+    NO_IMAGE_BY_DESIGN = {"leafy-green", "seeds", "grapefruit", "starch"}
+    dangling = [
+        f"{k} -> {v}" for k, v in EXTRA_ALIASES.items()
+        if not _exists(v) and v not in NO_IMAGE_BY_DESIGN
+    ]
+    check("别名的值都指向真实存在的图", dangling, [])
 
     print("\n=== 7. 关键词兜底：词库完全没有的写法 ===")
     # 这一级是最后一道防线，用构造出来的名字测（真实食材基本都被词库覆盖了）

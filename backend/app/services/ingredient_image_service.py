@@ -74,10 +74,10 @@ GUARD_RULES: tuple[tuple[tuple[str, ...], str], ...] = (
     # 名字里带动物、但其实不是那种肉的东西
     (("鸡腿菇", "鸡枞", "鸡油菌", "牛肝菌"), "mushroom"),   # 是菌菇不是鸡/牛
     (("羊奶", "马奶", "骆驼奶", "水牛奶"), "milk"),        # 是奶不是羊肉
-    # 这两个没有对应的图，故意指向不存在的 key：
-    # 这样 resolve_ingredient_image 会退到「蔬菜」的万能图，
-    # 而不是错误地配一张肉类图。以后补了图直接生效。
-    (("鸡毛菜", "牛蒡"), "leafy-green"),
+    # 「牛蒡」含「牛」、「鸡毛菜」含「鸡」，都会被肉类的单字关键词抢走。
+    # 这两个词库里其实有专属图（burdock / bok-choy），直接指过去。
+    (("牛蒡",), "burdock"),
+    (("鸡毛菜",), "bok-choy"),
 
     (("牛油果", "鳄梨"), "avocado"),            # 否则被 beef 的单字「牛」抢走
     (("花生", "花生米", "花生仁"), "peanut"),    # 否则被 rice 的单字「米」抢走
@@ -225,14 +225,14 @@ EXTRA_ALIASES: dict[str, str] = {
     "卷心菜": "cabbage",         # 清单里叫「大白菜/小白菜」，卷心菜是另一个常见叫法
     "紫甘蓝": "cabbage",
     "甘蓝": "cabbage",
-    "香椿": "香椿芽",            # 反向包含：词库名更长，子串匹配捞不到
-    "豆苗": "豌豆",
+    "香椿": "chinese-toon-sprout",  # 反向包含：词库名更长，子串匹配捞不到
+    "豆苗": "green-peas",
     # 部位肉 → 整块肉（做法上没区别，用同一张图）
     "梅花肉": "pork",
     "前腿肉": "pork",
     "后腿肉": "pork",
-    "鸭掌": "鸭肉",
-    "鸭肠": "鸭肉",
+    "鸭掌": "duck",
+    "鸭肠": "duck",
     # 其他
     "可乐": "soft-drink",
     "雪碧": "soft-drink",
@@ -242,6 +242,28 @@ EXTRA_ALIASES: dict[str, str] = {
     # 但厨房里说的「淀粉」通常就是玉米淀粉，用它的图。
     "淀粉": "cornstarch",
     "生粉": "cornstarch",
+    # —— 词库里确实没有、已经补图的（2026-10-06 自己生成）——
+    # 这些是扫 298 个常见食材时发现的缺口，图已经补上了。
+    "杏仁": "almond",
+    "开心果": "pistachio",
+    "榛子": "hazelnut",
+    "芝麻": "sesame",
+    "黑芝麻": "sesame",
+    "白芝麻": "sesame",
+    "枸杞": "goji-berry",
+    "蔓越莓": "cranberry",
+    "覆盆子": "raspberry",
+    "黑莓": "blackberry",
+    "无花果": "fig",
+    "竹荪": "bamboo-fungus",
+    "鸽子": "pigeon",
+    "鹌鹑": "quail",
+    "田螺": "river-snail",
+    "释迦": "sugar-apple",
+    # 「红枣干」「桂圆干」词库里是带「干」的全名，而用户说的是「红枣」「桂圆」——
+    # 又是反向包含的问题（子串匹配捞不到），只能显式补。
+    "红枣": "dried-red-date",
+    "桂圆": "dried-longan",
 }
 
 
@@ -342,6 +364,12 @@ def resolve_ingredient_image(name: str, stored_category: str | None = None) -> s
     key = resolve_ingredient_key(name)
     if key and _exists(key):
         return _url(key)
+
+    # 空名字直接返回 None。
+    # 不加这道闸的话，空名字会被归到「其他」，然后退到「其他」的万能图 ——
+    # 客户端会拿着一张「其他」的图去配一个空的食材行，很怪。
+    if not (name or "").strip():
+        return None
 
     # 具体图没有（或规则没命中）→ 退到分类万能图
     from app.services.ingredient_category import resolve_category, universal_image_key

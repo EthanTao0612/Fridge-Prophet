@@ -182,9 +182,14 @@ def main() -> int:
     # 注意别用「赛博朋克炒饭」这种名字测 —— 它含「饭」，会被主食规则命中，
     # 那是**正确**行为（它确实是以饭为主料的）。要测「认不出来」，
     # 得用一个真的不含任何食材关键词的名字。
-    check("完全不认识的食材 -> None（不瞎配图）",
-          resolve_ingredient_image("夸克胶子等离子体"), None)
-    check("空名字 -> None", resolve_ingredient_image(""), None)
+    # 词库里没有、但能归到某个分类的食材 → 退到该分类的万能图。
+    # 这是「万能图」存在的意义：比空白占位好，也不会配错具体图。
+    check("完全不认识的食材 -> 退到「其他」万能图",
+          resolve_ingredient_image("夸克胶子等离子体"),
+          "/static/ingredients/_universal-other.jpg")
+    # 但**空名字必须返回 None** —— 空名字没有分类意义，
+    # 给它配一张「其他」的图，客户端会拿去配一个空的食材行。
+    check("空名字 -> None（不配图）", resolve_ingredient_image(""), None)
 
     print("\n=== 12. 显示顺序 ===")
     check("蔬菜排第一", sort_key("蔬菜"), 0)

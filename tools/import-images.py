@@ -104,7 +104,11 @@ KINDS: dict[str, dict] = {
         "source": ROOT / ".tmp-images-ingredients",
         "target": ROOT / "backend" / "static" / "ingredients",
         "service": ROOT / "backend" / "app" / "services" / "ingredient_image_service.py",
-        "rule_names": ("INGREDIENT_RULES",),
+        "rule_names": ("INGREDIENT_RULES", "GUARD_RULES", "KEYWORD_RULES"),
+        # 别名表和万能图表是字典结构（中文名 -> key），值也要算作「需要的图」
+        "dict_rule_names": ("EXTRA_ALIASES", "UNIVERSAL_KEYS"),
+        # 万能图 key 定义在 ingredient_category.py，不在配图服务里
+        "extra_services": (ROOT / "backend" / "app" / "services" / "ingredient_lexicon.py",),
         "max_edge": 512,
         # 食材图**故意没有**兜底图：匹配不上就返回 None，
         # 客户端显示「首字 + 哈希色块」占位。
@@ -180,14 +184,24 @@ def expected_keys(cfg: dict) -> list[str]:
     直接读源文件而不是抄一份 key 列表：抄一份的话，规则表改了这里不会跟着改，
     最后变成「脚本说齐了、实际缺图」这种最难查的问题。
     """
-    src: Path = cfg["service"]
-    if not src.is_file():
-        print(f"[警告] 找不到规则表文件：{src}")
+    # 可能不止一个文件：配图规则在 ingredient_image_service.py，
+    # 万能图 key 在 ingredient_category.py（它从 lexicon 转出来）。
+    # 只扫一个文件的话，另一边的 key 会被误报成「不在规则表里」——
+    # 假警告会掩盖真的缺图警告，所以两个都要扫。
+    sources: list[Path] = [cfg["service"], *cfg.get("extra_services", [])]
+    existing = [p for p in sources if p.is_file()]
+    if not existing:
+        print(f"[警告] 找不到规则表文件：{sources}")
         return []
 
-    tree = ast.parse(src.read_text(encoding="utf-8"))
     keys: set[str] = set()
+    for src in existing:
+        _collect_keys(ast.parse(src.read_text(encoding="utf-8")), cfg, keys)
+    return sorted(keys)
 
+
+def _collect_keys(tree: ast.Module, cfg: dict, keys: set[str]) -> None:
+    """从一个已解析的模块里收集所有图片 key。"""
     for node in tree.body:
         if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
             name, value = node.target.id, node.value
@@ -202,12 +216,30 @@ def expected_keys(cfg: dict) -> list[str]:
 
         if name == "DEFAULT_KEY" and cfg["has_fallback"]:
             keys.add(ast.literal_eval(value))
+        elif name in cfg.get("dict_rule_names", ()):
+            # 结构是 {"中文名": "图片key"} 的字典 —— 别名表和万能图表。
+            # 取**值**（key），不是键（中文名）。
+            try:
+                parsed = ast.literal_eval(value)
+            except (ValueError, SyntaxError):
+                continue
+            if isinstance(parsed, dict):
+                keys.update(v for v in parsed.values() if isinstance(v, str))
         elif name in cfg["rule_names"]:
             # 结构是 ((关键词, 关键词...), "图片key")
-            for _keywords, key in ast.literal_eval(value):
+            #
+            # ⚠️ 规则表可能不是字面量 —— 比如
+            #     INGREDIENT_RULES = GUARD_RULES + KEYWORD_RULES
+            # 这时 value 是 BinOp 节点，literal_eval 会抛
+            # `ValueError: malformed node`。
+            # 遇到解析不了的**跳过就好**，因为那两个被加数本身也在
+            # rule_names 里，会被单独解析到。不要在这里 raise。
+            try:
+                parsed = ast.literal_eval(value)
+            except (ValueError, SyntaxError):
+                continue
+            for _keywords, key in parsed:
                 keys.add(key)
-
-    return sorted(keys)
 
 
 def main() -> int:
