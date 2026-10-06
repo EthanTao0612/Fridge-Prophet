@@ -120,15 +120,18 @@ def issue_code(db: Session, email: str, purpose: str = "register") -> tuple[str 
     if today_count >= DAILY_LIMIT:
         return None, "这个邮箱今天获取验证码的次数太多了，请明天再试"
 
-    # 同一个邮箱发新码 → 作废旧的，避免同时存在多个有效码
-    for old in db.execute(
-        select(EmailVerification).where(
-            EmailVerification.email == email,
-            EmailVerification.purpose == purpose,
-            EmailVerification.used_at.is_(None),
-        )
-    ).scalars():
-        old.used_at = now
+    # ⚠️ **不作废之前发的码。**
+    #
+    # 一开始的写法是「发新码就把旧的标记为已用」，看起来更干净，
+    # 但实测把 Ethan 卡住了：他先发了一次码（拿到 A），又发了一次（拿到 B），
+    # 然后用了 A —— 因为 A 已经被作废，注册失败，而他完全不知道为什么。
+    #
+    # 现在的做法：旧码在有效期内**继续可用**。
+    # 安全性没有实质下降 —— 每个码都有 5 分钟有效期和 5 次尝试上限，
+    # 加上每天 10 次的发码上限，暴力破解窗口最多 50 次尝试，
+    # 而 6 位码有 100 万种可能。
+    #
+    # 宁可让「用户用旧码」也能成功，也不要让他对着一个正确的码反复被拒。
 
     code = generate_code()
     db.add(
@@ -144,11 +147,16 @@ def issue_code(db: Session, email: str, purpose: str = "register") -> tuple[str 
 
 
 def verify_code(db: Session, email: str, code: str, purpose: str = "register") -> tuple[bool, str]:
-    """校验验证码。成功时把它标记为已用（一个码只能用一次）。"""
+    """校验验证码。成功时把它标记为已用（一个码只能用一次）。
+
+    同时存在多个有效码时（用户重复点了「获取验证码」），
+    **任何一个对得上都算通过**。
+    """
     email = email.strip().lower()
     now = _utcnow()
+    code = (code or "").strip()
 
-    row = db.execute(
+    rows = db.execute(
         select(EmailVerification)
         .where(
             EmailVerification.email == email,
@@ -156,32 +164,40 @@ def verify_code(db: Session, email: str, code: str, purpose: str = "register") -
             EmailVerification.used_at.is_(None),
         )
         .order_by(EmailVerification.created_at.desc())
-        .limit(1)
-    ).scalar_one_or_none()
+    ).scalars().all()
 
-    if row is None:
-        return False, "请先获取验证码"
+    if not rows:
+        return False, "请先点击「获取验证码」，我们会把验证码发到你的邮箱"
 
-    expires = row.expires_at
-    if expires.tzinfo is None:
-        expires = expires.replace(tzinfo=timezone.utc)
-    if now > expires:
+    wanted = _hash(code, email)
+    live = 0  # 还没过期的码有几个
+
+    for row in rows:
+        expires = row.expires_at
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+        if now > expires:
+            continue
+        live += 1
+
+        if row.attempts >= MAX_ATTEMPTS:
+            continue
+
+        row.attempts += 1
+        if row.code_hash == wanted:
+            row.used_at = now
+            db.commit()
+            return True, "验证通过"
+
+    db.commit()  # 保存 attempts 的累加
+
+    if live == 0:
         return False, "验证码已过期，请重新获取"
 
-    if row.attempts >= MAX_ATTEMPTS:
-        # 用掉它，逼用户重新发 —— 否则会一直被同一个码卡住
-        row.used_at = now
-        db.commit()
-        return False, "验证码错误次数过多，请重新获取"
-
-    row.attempts += 1
-    if _hash(code, email) != row.code_hash:
-        db.commit()
-        return False, "验证码不正确"
-
-    row.used_at = now
-    db.commit()
-    return True, "验证通过"
+    # ⚠️ 错误提示要说清楚**怎么办**，不能只说「不对」。
+    # 最常见的失败原因不是打错字，而是「发过好几次码，用的是旧的那封」——
+    # 用户看到「验证码不正确」只会怀疑自己看错了。
+    return False, "验证码不正确。如果你获取过多次验证码，请用最新收到的那一封"
 
 
 def send_code_email(email: str, code: str, purpose: str = "register") -> tuple[bool, str]:

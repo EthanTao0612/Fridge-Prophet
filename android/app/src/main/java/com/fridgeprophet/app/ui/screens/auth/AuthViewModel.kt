@@ -20,6 +20,8 @@ data class AuthUiState(
     val password: String = "",
     val nickname: String = "",
     val code: String = "",
+    /** 密码框是否显示明文（小眼睛） */
+    val passwordVisible: Boolean = false,
     val loading: Boolean = false,
     /** 发验证码的请求进行中（和登录/注册的 loading 分开，按钮互不影响） */
     val sendingCode: Boolean = false,
@@ -56,7 +58,17 @@ class AuthViewModel @Inject constructor(
         // 留着的话下次切回注册会看到一个莫名奇妙的倒计时
         cooldownJob?.cancel()
         _state.update {
-            it.copy(isRegisterMode = !it.isRegisterMode, error = null, notice = null, cooldown = 0)
+            it.copy(
+                isRegisterMode = !it.isRegisterMode,
+                error = null,
+                notice = null,
+                cooldown = 0,
+                // 切换模式时清掉密码：登录和注册是两个不同的密码。
+                // 不清的话，从登录切到注册会带着上一个密码，
+                // 用户以为「App 自己填了密码」。
+                password = "",
+                code = "",
+            )
         }
     }
 
@@ -68,6 +80,9 @@ class AuthViewModel @Inject constructor(
 
     fun onNicknameChange(value: String) =
         _state.update { it.copy(nickname = value, error = null) }
+
+    fun togglePasswordVisible() =
+        _state.update { it.copy(passwordVisible = !it.passwordVisible) }
 
     fun onCodeChange(value: String) =
         // 只留数字：用户从邮件里复制容易带上空格或别的字符

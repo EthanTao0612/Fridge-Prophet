@@ -155,6 +155,38 @@ def main() -> int:
                               "code": real_code})
         check("用过的码不能再用", r.status_code == 400, r.text[:200])
 
+        # ⚠️ 回归：重复发码**不能**作废之前的码。
+        #
+        # 一开始的写法是「发新码就把旧的标记为已用」，实测把用户卡住了：
+        # 先发一次拿到 A，又发一次拿到 B，然后用 A —— 因为 A 被作废而失败，
+        # 用户完全不知道为什么（他看到的只是一句「验证码不正确」）。
+        #
+        # 这里绕过 60 秒冷却直接调服务层，模拟「过一会儿又发了一次」。
+        from app.db.session import SessionLocal  # noqa: E402
+        from app.services.email_service import issue_code  # noqa: E402
+
+        client.post("/api/v1/auth/send-code", json={"email": "twice@fridge.com"})
+        first_code = _CODES.get("twice@fridge.com")
+        db = SessionLocal()
+        try:
+            second_code, _ = issue_code(db, "twice@fridge.com", "register")
+        finally:
+            db.close()
+        check("两次发的码不一样", first_code != second_code, f"{first_code}/{second_code}")
+
+        r = client.post("/api/v1/auth/register",
+                        json={"email": "twice@fridge.com", "password": "test123456",
+                              "code": first_code})
+        check("用先发的那个码仍然能注册（不被新码作废）",
+              r.status_code == 201, r.text[:200])
+
+        # 错误提示要告诉用户「怎么办」，不能只说「不对」
+        r = client.post("/api/v1/auth/register",
+                        json={"email": "hint@fridge.com", "password": "test123456",
+                              "code": "000000"})
+        check("没发过码时的提示说明要先获取",
+              "获取验证码" in r.text, r.text[:200])
+
         # 60 秒冷却
         client.post("/api/v1/auth/send-code", json={"email": "cooldown@fridge.com"})
         r = client.post("/api/v1/auth/send-code", json={"email": "cooldown@fridge.com"})

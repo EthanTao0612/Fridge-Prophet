@@ -22,10 +22,14 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.autofill.ContentType
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentType
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
@@ -142,12 +146,38 @@ fun AuthScreen(
                     onValueChange = viewModel::onPasswordChange,
                     label = { Text("密码（至少 6 位）") },
                     singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(),
+                    // 小眼睛：切换明文/密文。
+                    //
+                    // 用文字按钮而不是图标 —— 项目里没引 material-icons-extended，
+                    // 为了一个眼睛去加依赖不值得（这个项目的依赖矩阵很脆，
+                    // 加 Coil 3 触发过 Gradle 依赖图异常）。
+                    trailingIcon = {
+                        TextButton(onClick = viewModel::togglePasswordVisible) {
+                            Text(if (state.passwordVisible) "隐藏" else "显示")
+                        }
+                    },
+                    visualTransformation = if (state.passwordVisible) {
+                        VisualTransformation.None
+                    } else {
+                        PasswordVisualTransformation()
+                    },
                     keyboardOptions = KeyboardOptions(
                         keyboardType = KeyboardType.Password,
                         imeAction = ImeAction.Done,
                     ),
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        // ⚠️ 告诉系统的密码管理器「这是**新**密码」。
+                        // 不设的话，注册页会被自动填上一个旧密码 ——
+                        // 用户看到一串自己没打过的圆点，会以为 App 有 bug。
+                        // 登录模式才是「已有密码」，那边允许自动填充。
+                        .then(
+                            if (state.isRegisterMode) {
+                                Modifier.semantics { contentType = ContentType.NewPassword }
+                            } else {
+                                Modifier
+                            }
+                        ),
                 )
             }
 
