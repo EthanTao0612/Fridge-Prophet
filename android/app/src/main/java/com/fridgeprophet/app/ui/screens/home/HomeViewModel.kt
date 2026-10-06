@@ -132,6 +132,13 @@ class HomeViewModel @Inject constructor(
     fun clearMessages() = _state.update { it.copy(error = null, infoMessage = null) }
 
     /** 首页的「今天吃什么」：直接调后端生成菜谱 */
+    /**
+     * 首页的「今天吃什么？」。
+     *
+     * 后端 `/recipes/generate` 从 2026-10-06 起是**查菜品库**（按食材匹配），
+     * 不调 AI —— 所以这里的文案不再说「生成」，而是「挑」。
+     * 写「AI 生成」会让用户以为要等 20 秒。
+     */
     fun generateRecipes() {
         if (_state.value.items.isEmpty()) {
             _state.update { it.copy(infoMessage = "冰箱还是空的，先扫描一次吧") }
@@ -148,9 +155,9 @@ class HomeViewModel @Inject constructor(
                             generating = false,
                             recommendations = recipes,
                             infoMessage = if (recipes.isEmpty()) {
-                                "没有生成出菜谱，请检查冰箱库存"
+                                "冰箱里现有的食材还做不了菜品库里的菜。先去冰箱页加几样，或者扫描一次。"
                             } else {
-                                "已根据你的库存和偏好生成 ${recipes.size} 道菜"
+                                "从菜品库挑了 ${recipes.size} 道你现在能做的菜"
                             },
                         )
                     }

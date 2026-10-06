@@ -171,7 +171,9 @@ fun RecipesScreen(
             visible.isEmpty() -> EmptyState(
                 title = if (state.recipes.isEmpty()) "还没有菜谱" else "这个筛选下没有菜谱",
                 description = if (state.recipes.isEmpty()) {
-                    "点上面的按钮，让 AI 根据你冰箱里的食材推荐几道菜"
+                    // ⚠️ 这里**不要再写「让 AI 推荐」**。
+                    // 「生成」现在是查菜品库（按食材匹配），不调 AI。
+                    "点上面的按钮，从菜品库里挑几道你现在能做的菜"
                 } else {
                     "换个筛选条件试试"
                 },
