@@ -40,6 +40,16 @@ os.environ["SMTP_HOST"] = ""
 os.environ["SMTP_USER"] = ""
 os.environ["SMTP_PASSWORD"] = ""
 
+# ⚠️ 把 AI 配额放到极大。
+#
+# 这套测试会反复调 /vision/scan 和 /recipes/generate（光去重那一节就 4 次），
+# 用默认的「每用户 30 次/天」会直接把测试打成 429 ——
+# 而报错看起来会像「生成菜谱接口坏了」，排查方向完全跑偏。
+#
+# 配额本身单独在「20. AI 配额」那一节测（临时把上限调低再验 429）。
+os.environ["DAILY_AI_LIMIT_PER_USER"] = "100000"
+os.environ["DAILY_AI_LIMIT_GLOBAL"] = "1000000"
+
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app.main import app  # noqa: E402
@@ -697,6 +707,21 @@ def main() -> int:
         after_cnt = len(client.get("/api/v1/recipes", headers=viewer).json())
         check("materialize 没有新增菜谱行", after_cnt == before_cnt,
               f"{before_cnt} → {after_cnt}")
+
+        # ⭐ materialize 走「库里已有」这条路时**不扣 AI 配额**。
+        # 这是整个设计的意义所在：点推荐菜是查库，不该花额度。
+        # 把额度压到 0，它仍然要能正常返回。
+        from app.core.config import settings as _cfg  # noqa: PLC0415
+
+        _old_limit = _cfg.DAILY_AI_LIMIT_PER_USER
+        try:
+            _cfg.DAILY_AI_LIMIT_PER_USER = 0
+            r = client.post("/api/v1/recipes/materialize", headers=viewer,
+                            json={"name": BUILTIN_NAME})
+            check("额度为 0 时 materialize 仍能返回内置菜谱（因为不调 AI）",
+                  r.status_code == 200, r.text[:200])
+        finally:
+            _cfg.DAILY_AI_LIMIT_PER_USER = _old_limit
 
         # ③ 全局记录没有被改写：还是 user_id NULL + source builtin
         conn = _sqlite3.connect(_DB_FILE)
@@ -1626,6 +1651,72 @@ def main() -> int:
 
         # 清理这一节建的箱子，别影响后面的用例
         client.delete(f"/api/v1/food-categories/{box['id']}", headers=headers)
+
+        print("\n=== 17e. AI 每日配额（给百炼额度兜底）===")
+        # 后端原本**没有任何限流**，而注册是开放的 —— 任何人发现域名后
+        # 注册个账号就能反复调 /vision/scan 和 /recipes/generate，
+        # 每一次都在花项目自己的钱。这一节钉住那两道闸。
+        from app.core.config import settings as _cfg2  # noqa: PLC0415
+        import sqlite3 as _sq2  # noqa: PLC0415
+
+        def _clear_usage() -> None:
+            conn = _sq2.connect(_DB_FILE)
+            conn.execute("DELETE FROM ai_usage")
+            conn.commit()
+            conn.close()
+
+        _clear_usage()
+        _old_u, _old_g = _cfg2.DAILY_AI_LIMIT_PER_USER, _cfg2.DAILY_AI_LIMIT_GLOBAL
+        try:
+            _cfg2.DAILY_AI_LIMIT_PER_USER = 3
+            _cfg2.DAILY_AI_LIMIT_GLOBAL = 1000
+
+            r = client.get("/api/v1/vision/status", headers=headers)
+            check("status 里能看到今日剩余额度",
+                  r.json().get("ai_quota_left") == 3, r.text[:200])
+
+            for i in range(3):
+                r = client.post("/api/v1/recipes/generate", headers=headers,
+                                json={"count": 1, "save": False})
+                check(f"额度内第 {i + 1} 次放行", r.status_code == 200, r.text[:200])
+
+            r = client.post("/api/v1/recipes/generate", headers=headers,
+                            json={"count": 1, "save": False})
+            check("超出额度返回 429", r.status_code == 429, r.text[:200])
+            check("429 的文案说清了原因并给了替代方案",
+                  "额度" in r.text and "推荐" in r.text, r.text[:300])
+            check("429 带 Retry-After 头",
+                  r.headers.get("retry-after") is not None, str(dict(r.headers)))
+
+            # 全站那道闸：用户额度放大，但全站卡死。
+            # 只有按用户限流是不够的 —— 攻击者注册 100 个账号就拿到 100 倍额度。
+            _cfg2.DAILY_AI_LIMIT_PER_USER = 1000
+            _cfg2.DAILY_AI_LIMIT_GLOBAL = 3
+            _clear_usage()
+            for _ in range(3):
+                client.post("/api/v1/recipes/generate", headers=headers,
+                            json={"count": 1, "save": False})
+            r = client.post("/api/v1/recipes/generate", headers=headers,
+                            json={"count": 1, "save": False})
+            check("全站额度用完也返回 429", r.status_code == 429, r.text[:200])
+
+            # 不调 AI 的接口不该被拦 —— 否则「额度用完 = App 不能用」，
+            # 那是把限流做成了自残
+            _cfg2.DAILY_AI_LIMIT_PER_USER = 0
+            _cfg2.DAILY_AI_LIMIT_GLOBAL = 0
+            _clear_usage()
+            for path, label in (
+                ("/api/v1/recipes/recommend", "推荐（查库）"),
+                ("/api/v1/recipes", "菜谱列表"),
+                ("/api/v1/inventory", "冰箱"),
+                ("/api/v1/tips?limit=3", "小贴士"),
+            ):
+                r = client.get(path, headers=headers)
+                check(f"额度为 0 时 {label} 仍可用", r.status_code == 200, r.text[:200])
+        finally:
+            _cfg2.DAILY_AI_LIMIT_PER_USER = _old_u
+            _cfg2.DAILY_AI_LIMIT_GLOBAL = _old_g
+            _clear_usage()
 
         print("\n=== 18. 清理 ===")
         r = client.delete("/api/v1/inventory", headers=headers)

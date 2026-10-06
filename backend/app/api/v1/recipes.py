@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.api.deps import CurrentUser, DbSession, get_or_create_preference
+from app.api.deps import CurrentUser, DbSession, guard_ai_quota, get_or_create_preference
 from app.models.inventory import FoodInventory
 from app.models.recipe import MealHistory, Recipe, RecipeFeedback, RecipeIngredient
 from app.models.user import HealthPreference
@@ -306,6 +306,12 @@ def _row_to_out(row: Recipe) -> RecipeOut:
 @router.post("/generate", response_model=RecipeGenerateResponse,
              summary="根据库存 + 用户画像生成菜谱（核心接口）")
 def generate(payload: RecipeGenerateRequest, user: CurrentUser, db: DbSession):
+    # ⚠️ 配额检查必须在最前面 —— 这个接口每调一次就是一次真实的百炼计费。
+    #
+    # 一次调用生成 count 道菜，但**只扣 1 次配额**：
+    # 花的是「一次 AI 调用」的钱，按次数扣才和账单对得上。
+    guard_ai_quota(db, user.id)
+
     inventory, expiring, pref, health = _load_context(db, user.id)
 
     # 把「用户已经有的菜名」带进提示词，让模型避开重复。
@@ -539,6 +545,11 @@ def materialize(
         return _with_availability(_row_to_out(existing), inventory)
 
     # ② 库里没有（离线生成时漏掉的）→ 现生成一条，只落给这个用户
+    #
+    # ⚠️ 配额检查放在这里而不是函数开头：
+    # 正常情况下 ① 就返回了（查库、不花钱），**根本走不到这里**。
+    # 放在开头会让每次点推荐菜都白扣一次配额 —— 而那本该是免费的。
+    guard_ai_quota(db, user.id)
     _guard_write(db, user.id)
     inventory, expiring, pref, health = _load_context(db, user.id)
 

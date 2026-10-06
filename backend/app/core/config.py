@@ -41,6 +41,16 @@ class Settings(BaseSettings):
     TEXT_MODEL: str = "qwen-plus"
     AI_TIMEOUT_SECONDS: float = 90.0
 
+    # —— AI 每日配额（给百炼额度上一道保险，见 services/quota_service.py）——
+    #
+    # 后端接口原本没有限流，而注册是开放的 —— 任何人发现域名后注册个账号
+    # 就能反复调 /vision/scan 和 /recipes/generate，每次都在花项目自己的钱。
+    #
+    # 演示前如果怕被限住，把 PER_USER 调大（改 .env 即可，不用改代码）。
+    # GLOBAL 是**账单的硬上限**：就算有人批量注册账号，全站每天也就这么多。
+    DAILY_AI_LIMIT_PER_USER: int = 30
+    DAILY_AI_LIMIT_GLOBAL: int = 500
+
     # ---- 上传 ----
     MAX_UPLOAD_MB: int = 10
     UPLOAD_DIR: Path = BASE_DIR / "uploads"

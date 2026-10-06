@@ -44,6 +44,47 @@ def get_current_user(
 CurrentUser = Annotated[User, Depends(get_current_user)]
 
 
+def guard_ai_quota(db: Session, user_id: int, *, cost: int = 1) -> None:
+    """**调 AI 之前的守门人**。额度用完就抛 429。
+
+    ## 为什么所有调 AI 的接口都要经过这里
+
+    AI 是**唯一会花真钱**的东西（百炼按调用计费）。
+    漏掉一处就等于留了一个免费刷额度的口子 ——
+    而「漏掉一处」很难靠 review 发现，因为接口是散在各文件里的。
+
+    所以统一成这一个函数，加新接口时**先想一下它调不调 AI**，
+    调就加上这一行。
+
+    ## 为什么放在 deps.py
+
+    它和 `CurrentUser` / `DbSession` 一样，是「接口的横切关注点」，
+    而且需要 `db` 和 `user_id` 这两样东西 —— 放在这里调用方最省事。
+
+    ## 返回 429 而不是 403
+
+    429 Too Many Requests 是标准语义，客户端能据此区分
+    「没权限」和「用超了」。客户端也可以据此显示一个专门的提示。
+    """
+    from app.services.quota_service import consume_ai_quota
+
+    result = consume_ai_quota(db, user_id, cost=cost)
+    if not result.allowed:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=result.message(),
+            # 客户端可以用它做倒计时（这里就是「明天再来」）
+            headers={"Retry-After": "86400"},
+        )
+
+
+def ai_quota_left(db: Session, user_id: int) -> int:
+    """今天还剩几次 AI 调用。**只看不扣**，给界面显示用。"""
+    from app.services.quota_service import quota_status
+
+    return quota_status(db, user_id).remaining
+
+
 def get_or_create_preference(db: Session, user_id: int) -> UserPreference:
     pref = db.query(UserPreference).filter(UserPreference.user_id == user_id).one_or_none()
     if pref is None:

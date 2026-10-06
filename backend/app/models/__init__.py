@@ -1,4 +1,5 @@
 """ORM 模型。对应策划书第十五节的数据库设计。"""
+from app.models.ai_usage import AiUsage
 from app.models.food_category import FoodCategory, FoodCategoryItem
 from app.models.inventory import FoodInventory
 from app.models.recipe import MealHistory, Recipe, RecipeFeedback, RecipeIngredient
@@ -16,6 +17,7 @@ from app.models.user import (
 )
 
 __all__ = [
+    "AiUsage",
     "EmailVerification",
     "User",
     "UserPreference",

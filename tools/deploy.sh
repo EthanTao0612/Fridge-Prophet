@@ -392,6 +392,17 @@ DASHSCOPE_API_KEY=${IN_AI}
 SUPABASE_URL=${IN_SUPA_URL}
 SUPABASE_SERVICE_KEY=${IN_SUPA_KEY}
 
+# —— AI 每日配额（给百炼额度兜底）——
+#
+# 后端接口没有限流，而注册是开放的 —— 任何人发现这个域名后注册个账号，
+# 就能反复调 /vision/scan 和 /recipes/generate，每次都在花你的钱。
+# 所以有两道闸（见 app/services/quota_service.py）：
+#   PER_USER 防单个账号霸占；GLOBAL 是**账单的硬上限**。
+#
+# 演示前怕被限住的话，把 PER_USER 调大（不用改代码）。
+DAILY_AI_LIMIT_PER_USER=30
+DAILY_AI_LIMIT_GLOBAL=500
+
 # 邮箱验证码（不填则验证码只打到日志里，注册流程仍可走通）
 SMTP_HOST=
 SMTP_PORT=465
