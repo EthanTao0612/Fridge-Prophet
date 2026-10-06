@@ -78,14 +78,19 @@ def main() -> int:
     print("\n=== 4. 图库里没有的食材，靠名字也要能分组 ===")
     # 这正是 Ethan 要的场景：外部生成的图不可能覆盖所有食材。
     for name, want in [
-        ("杨桃", "水果"), ("车厘子", "水果"), ("榴莲", "水果"), ("山竹", "水果"),
+        ("杨桃", "水果"), ("榴莲", "水果"), ("山竹", "水果"),
         ("百香果", "水果"), ("菠萝蜜", "水果"),
-        ("鲍鱼", "水产"), ("海参", "水产"), ("扇贝", "水产"), ("紫菜", "水产"),
+        ("鲍鱼", "水产"), ("海参", "水产"), ("扇贝", "水产"),
         ("鸭脖", "肉类"), ("鸡爪", "肉类"),
         ("鹅蛋", "蛋奶"), ("羊奶", "蛋奶"),
         ("小米粥", "主食"), ("油条", "主食"),
     ]:
         check(f"{name} -> {want}", resolve_category(name), want)
+
+    # 海带、紫菜按清单的分类归「蔬菜」（子类：水生蔬菜与海藻），不是水产。
+    # 这条容易想当然，单独钉一下。
+    check("海带 -> 蔬菜（清单里归水生蔬菜）", resolve_category("海带"), "蔬菜")
+    check("紫菜 -> 蔬菜（同上）", resolve_category("紫菜"), "蔬菜")
 
     print("\n=== 5. 加工调味料：不能被原料规则抢走 ===")
     # 「番茄酱」含「番茄」、「花生油」含「花生」—— 会命中原料的图片规则，
@@ -138,8 +143,9 @@ def main() -> int:
 
     print("\n=== 11. 万能图降级链 ===")
     # 真实场景：外部生成的图不可能覆盖所有食材。
-    # 「杨桃」不在图库里，但它属于水果 —— 应该退到水果的万能图，
-    # 而不是显示空白占位。
+    # 有 574 张具体图之后，触发万能图的情况少了很多 ——
+    # 所以这里用**真的不存在**的食材名来测，不能用「杨桃」
+    #（杨桃已经有 star-fruit.jpg 了，走的是具体图那条路）。
     from app.core.config import settings  # noqa: E402
     from app.services.ingredient_image_service import resolve_ingredient_image  # noqa: E402
 
@@ -155,16 +161,18 @@ def main() -> int:
 
     try:
         if probe.exists():
-            check("杨桃（图库里没有）-> 退到水果万能图",
-                  resolve_ingredient_image("杨桃"), "/static/ingredients/_universal-fruit.jpg")
-            check("榴莲 同上",
-                  resolve_ingredient_image("榴莲"), "/static/ingredients/_universal-fruit.jpg")
+            # 「火星果」认不出具体 key，但名字里的「果」让它属于水果
+            check("火星果（词库没有）-> 退到水果万能图",
+                  resolve_ingredient_image("火星果"), "/static/ingredients/_universal-fruit.jpg")
             # 有具体图的仍然用具体图，不能被万能图顶掉
-            check("西红柿 仍然用具体图",
+            check("杨桃 有具体图，不用万能图",
+                  resolve_ingredient_image("杨桃"), "/static/ingredients/star-fruit.jpg")
+            check("西红柿 同上",
                   resolve_ingredient_image("西红柿"), "/static/ingredients/tomato.jpg")
             # 没有万能图的分类，仍然返回 None（客户端走占位样式）
-            check("鸭脖（无肉类万能图）-> None",
-                  resolve_ingredient_image("鸭脖"), None)
+            # 鸭脖以前没有图、只能显示占位；现在词库里有 duck-neck 了
+            check("鸭脖 现在有具体图",
+                  resolve_ingredient_image("鸭脖"), "/static/ingredients/duck-neck.jpg")
         else:
             print("  [SKIP] 找不到可借用的图片，跳过降级链验证")
     finally:

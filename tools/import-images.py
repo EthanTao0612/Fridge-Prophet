@@ -219,10 +219,21 @@ def main() -> int:
         help="转换哪一类图（默认 recipes）",
     )
     parser.add_argument("--check", action="store_true", help="只检查，不写文件")
+    parser.add_argument(
+        "--src",
+        type=Path,
+        default=None,
+        help=(
+            "临时覆盖源目录。用于导入在别处生成的图，"
+            "比如 Ethan 在外部程序批量生成后放在 OneDrive 里的那批：\n"
+            '  --src "H:/OneDrive/Desktop/冰冰冰/食材图片"'
+        ),
+    )
     args = parser.parse_args()
 
     cfg = KINDS[args.kind]
-    source_dir: Path = cfg["source"]
+    # --src 优先：外部生成的图不必先搬进 .tmp-images-ingredients/
+    source_dir: Path = args.src if args.src else cfg["source"]
     target_dir: Path = cfg["target"]
     max_edge: int = cfg["max_edge"]
 

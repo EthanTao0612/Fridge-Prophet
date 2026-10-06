@@ -196,9 +196,15 @@ def main() -> int:
         check("食材图规则：鸡蛋理论命中 egg",
               resolve_ingredient_key("鸡蛋") == "egg",
               f"实际 {resolve_ingredient_key('鸡蛋')}")
-        check("食材图规则：鸡胸肉理论命中 chicken",
-              resolve_ingredient_key("鸡胸肉") == "chicken",
+        # 574 张图导入后，词库能给出更精确的 key（鸡胸肉 -> chicken-breast），
+        # 比早期的通用 key（chicken）更好。
+        check("食材图规则：鸡胸肉理论命中 chicken-breast",
+              resolve_ingredient_key("鸡胸肉") == "chicken-breast",
               f"实际 {resolve_ingredient_key('鸡胸肉')}")
+        # 「肥羊肉」这类词库里没有的写法，要靠子串匹配兜住
+        check("食材图规则：肥羊肉能认成羊肉",
+              resolve_ingredient_key("肥羊肉") == "lamb",
+              f"实际 {resolve_ingredient_key('肥羊肉')}")
 
         r = client.get("/api/v1/inventory?storage_location=冷冻", headers=headers)
         check("按位置筛选", r.status_code == 200 and len(r.json()) == 1, r.text[:200])
