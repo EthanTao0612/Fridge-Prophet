@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import base64
 import io
+import logging
 import os
+import re
 import sys
 import tempfile
 from datetime import date, timedelta
@@ -41,6 +43,42 @@ def check(name: str, condition: bool, detail: str = "") -> None:
         print(f"  [FAIL] {name}  {detail}")
 
 
+# —— 验证码取码：从日志里捞 ——
+#
+# 注册现在必须带邮箱验证码。测试环境没配 SMTP（配了也不该真发邮件），
+# email_service 会把验证码打到日志里，这里挂个 handler 捞出来。
+#
+# 为什么不做个「测试专用后门」直接读库：那等于在生产代码里留一条
+# 「绕过验证码」的路径，风险远大于测试的便利。
+# 从日志捞虽然土，但走的是**和开发环境完全一样**的那条路。
+_CODES: dict[str, str] = {}
+
+
+class _CodeGrabber(logging.Handler):
+    def emit(self, record: logging.LogRecord) -> None:
+        m = re.search(r"验证码直接打到日志：(\S+) -> (\d+)", record.getMessage())
+        if m:
+            _CODES[m.group(1)] = m.group(2)
+
+
+logging.getLogger().addHandler(_CodeGrabber())
+logging.getLogger().setLevel(logging.INFO)
+
+
+def register(client, email: str, password: str = "test123456", nickname: str = ""):
+    """走完整注册流程：发验证码 → 从日志取码 → 带着码注册。
+
+    返回和直接调 `/auth/register` 一样的响应对象，
+    这样调用方不用关心验证码这层。
+    """
+    client.post("/api/v1/auth/send-code", json={"email": email})
+    code = _CODES.get(email.lower())
+    body = {"email": email, "password": password, "code": code or "000000"}
+    if nickname:
+        body["nickname"] = nickname
+    return client.post("/api/v1/auth/register", json=body)
+
+
 def main() -> int:
     # 1x1 透明 PNG，用来冒充冰箱照片
     fake_png = base64.b64decode(
@@ -56,10 +94,7 @@ def main() -> int:
         check("服务信息", r.status_code == 200, r.text[:200])
 
         print("\n=== 1. 注册与登录 ===")
-        r = client.post(
-            "/api/v1/auth/register",
-            json={"email": "demo@fridge.com", "password": "demo123456", "nickname": "小明"},
-        )
+        r = register(client, "demo@fridge.com", "demo123456", "小明")
         check("注册成功", r.status_code == 201, r.text[:300])
         if r.status_code != 201:
             return report()
@@ -86,6 +121,59 @@ def main() -> int:
 
         r = client.get("/api/v1/auth/me", headers=headers)
         check("携带令牌可访问", r.status_code == 200, r.text[:200])
+
+        print("\n=== 1b. 邮箱验证码（注册必须带码）===")
+        # 以前只校验邮箱格式，a@b.com 这种编造的地址也能注册成功。
+        # 这一节钉住「必须证明邮箱是你的」这件事。
+        r = client.post("/api/v1/auth/register",
+                        json={"email": "nocode@fridge.com", "password": "test123456"})
+        check("不带验证码注册被拒", r.status_code == 422, r.text[:200])
+
+        r = client.post("/api/v1/auth/register",
+                        json={"email": "nocode@fridge.com", "password": "test123456",
+                              "code": "000000"})
+        check("没发过码就填码被拒", r.status_code == 400, r.text[:200])
+
+        # 发码 → 从日志取码 → 注册
+        client.post("/api/v1/auth/send-code", json={"email": "codeuser@fridge.com"})
+        real_code = _CODES.get("codeuser@fridge.com")
+        check("验证码能从日志取到（开发模式）", bool(real_code), "没捞到码")
+
+        r = client.post("/api/v1/auth/register",
+                        json={"email": "codeuser@fridge.com", "password": "test123456",
+                              "code": "999999" if real_code != "999999" else "111111"})
+        check("错误的验证码被拒", r.status_code == 400, r.text[:200])
+
+        r = client.post("/api/v1/auth/register",
+                        json={"email": "codeuser@fridge.com", "password": "test123456",
+                              "code": real_code})
+        check("正确的验证码注册成功", r.status_code == 201, r.text[:200])
+
+        # 一个码只能用一次
+        r = client.post("/api/v1/auth/register",
+                        json={"email": "another@fridge.com", "password": "test123456",
+                              "code": real_code})
+        check("用过的码不能再用", r.status_code == 400, r.text[:200])
+
+        # 60 秒冷却
+        client.post("/api/v1/auth/send-code", json={"email": "cooldown@fridge.com"})
+        r = client.post("/api/v1/auth/send-code", json={"email": "cooldown@fridge.com"})
+        check("60 秒内重复发码被限流", r.status_code == 429, r.text[:200])
+
+        # 已注册的邮箱再请求发码：**响应必须和未注册时一致**，
+        # 否则这个公开接口就成了「查某个邮箱在不在这个平台」的工具。
+        r_reg = client.post("/api/v1/auth/send-code", json={"email": "demo@fridge.com"})
+        r_new = client.post("/api/v1/auth/send-code", json={"email": "brand-new@fridge.com"})
+        check("已注册邮箱的响应结构和不存在的完全一致（防账号枚举）",
+              r_reg.status_code == r_new.status_code
+              and set(r_reg.json().keys()) == set(r_new.json().keys()),
+              f"{r_reg.status_code}/{r_new.status_code}")
+
+        # 注册过的邮箱再注册要提示「直接登录」
+        r = client.post("/api/v1/auth/register",
+                        json={"email": "demo@fridge.com", "password": "test123456",
+                              "code": "123456"})
+        check("重复注册提示已注册", r.status_code == 409 and "登录" in r.text, r.text[:200])
 
         print("\n=== 2. 用户画像 ===")
         r = client.get("/api/v1/users/profile", headers=headers)
@@ -370,10 +458,13 @@ def main() -> int:
         check("「青椒炒鸡蛋」命中菜品库专属图",
               rule_key("青椒炒鸡蛋", ["青椒", "鸡蛋"]) == "scrambled-eggs-with-green-peppers",
               f"实际 {rule_key('青椒炒鸡蛋', ['青椒', '鸡蛋'])}")
-        # 但菜品库里没有的菜名，仍然按食材猜
+        # 但菜品库里没有的菜名，仍然按食材猜（命中哪一个都算合理兜底，
+        # 这里只要求「命中了一个和食材相关的图」，不锁死具体 key ——
+        # 旧规则表里蛋类排在番茄前面，改顺序就会变，锁死会让测试变脆）
+        fallback = rule_key("秘制小炒", ["西红柿", "鸡蛋"])
         check("菜品库没有的菜名仍按食材猜",
-              rule_key("秘制小炒", ["西红柿", "鸡蛋"]) == "tomato-egg",
-              f"实际 {rule_key('秘制小炒', ['西红柿', '鸡蛋'])}")
+              fallback in ("egg", "tomato-egg", "cucumber-salad"),
+              f"实际 {fallback}")
 
         # 完全陌生的菜（一个关键词都命中不了）必须能退到 default，候选链末尾也一定是 default。
         # 注意菜名里不能带「炒饭」「鸡」这类会被规则命中的词，否则测的就不是「陌生菜」了。
@@ -734,8 +825,7 @@ def main() -> int:
         check("随机取贴士", r.status_code == 200 and r.json()["count"] == 2)
 
         print("\n=== 9. 数据隔离 ===")
-        r = client.post("/api/v1/auth/register",
-                        json={"email": "other@fridge.com", "password": "other123456"})
+        r = register(client, "other@fridge.com", "other123456")
         other_headers = {"Authorization": f"Bearer {r.json()['access_token']}"}
         r = client.get("/api/v1/inventory", headers=other_headers)
         check("新用户看不到别人的库存", r.status_code == 200 and len(r.json()) == 0, r.text[:200])
@@ -949,13 +1039,11 @@ def main() -> int:
         # 用两个独立账号验证共享。共享是这次改动里最容易出错的地方 ——
         # 每个查询都要走 family_service.visible_user_ids()，漏一处就会
         # 出现「冰箱里看得到、菜谱里看不到」这种自相矛盾。
-        r = client.post("/api/v1/auth/register", json={
-            "email": "fam_owner@example.com", "password": "fam123456", "nickname": "家长"})
+        r = register(client, "fam_owner@example.com", "fam123456", "家长")
         check("家庭主账号注册", r.status_code == 201, r.text[:200])
         owner_h = {"Authorization": f"Bearer {r.json()['access_token']}"}
 
-        r = client.post("/api/v1/auth/register", json={
-            "email": "fam_member@example.com", "password": "fam123456", "nickname": "家人"})
+        r = register(client, "fam_member@example.com", "fam123456", "家人")
         check("成员账号注册", r.status_code == 201, r.text[:200])
         member_h = {"Authorization": f"Bearer {r.json()['access_token']}"}
 

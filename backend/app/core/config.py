@@ -63,6 +63,28 @@ class Settings(BaseSettings):
     def supabase_storage_enabled(self) -> bool:
         return bool(self.SUPABASE_URL.strip() and self.SUPABASE_SERVICE_KEY.strip())
 
+    # ---- 邮箱验证码（注册用）----
+    #
+    # 不配也能跑：验证码会打到服务端日志里（开发模式）。
+    # 但**生产环境必须配**，否则任何人都能用编造的邮箱注册。
+    #
+    # QQ 邮箱为例：
+    #   SMTP_HOST=smtp.qq.com
+    #   SMTP_PORT=465
+    #   SMTP_USER=你的QQ号@qq.com
+    #   SMTP_PASSWORD=授权码（不是登录密码！在 QQ 邮箱设置→账户 里开 SMTP 服务时生成）
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 465
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_FROM_NAME: str = "冰箱先知"
+    # 465 端口用 SSL，587 端口用 STARTTLS
+    SMTP_USE_SSL: bool = True
+
+    @property
+    def smtp_enabled(self) -> bool:
+        return bool(self.SMTP_HOST.strip() and self.SMTP_USER.strip() and self.SMTP_PASSWORD.strip())
+
     @property
     def ai_enabled(self) -> bool:
         return bool(self.DASHSCOPE_API_KEY.strip())

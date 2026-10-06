@@ -59,6 +59,17 @@ async def lifespan(app: FastAPI):
         if settings.ai_enabled
         else "MOCK 模式（未配置 DASHSCOPE_API_KEY）",
     )
+
+    # 没配 SMTP 时注册验证码会打到日志里 —— 开发能跑通，
+    # 但**生产环境这样等于没有邮箱验证**，必须显眼地提醒。
+    if settings.smtp_enabled:
+        logger.info("邮箱验证码: 已配置（%s）", settings.SMTP_HOST)
+    else:
+        logger.warning(
+            "邮箱验证码: ⚠️ 未配置 SMTP —— 验证码只会打到日志里，"
+            "任何人都能用编造的邮箱注册。生产环境请配 SMTP_HOST/USER/PASSWORD。"
+        )
+
     yield
     logger.info("服务已停止")
 

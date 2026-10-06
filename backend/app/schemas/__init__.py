@@ -1,5 +1,11 @@
 """Pydantic 请求/响应模型。"""
-from app.schemas.auth import LoginRequest, RegisterRequest, TokenResponse
+from app.schemas.auth import (
+    LoginRequest,
+    RegisterRequest,
+    SendCodeRequest,
+    SendCodeResponse,
+    TokenResponse,
+)
 from app.schemas.inventory import (
     InventoryCreate,
     InventoryOut,
