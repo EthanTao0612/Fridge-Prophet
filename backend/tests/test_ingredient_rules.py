@@ -88,7 +88,12 @@ def main() -> int:
     # 葡萄柚指向「柚子」（pomelo）而不是单独的 grapefruit ——
     # 清单里只有柚子的图，两者外观接近，用它的图比退到万能图好。
     check("葡萄柚 不被「葡萄」抢走", resolve_ingredient_key("葡萄柚"), "pomelo")
-    check("淀粉 不被「粉」抢走", resolve_ingredient_key("淀粉"), "starch")
+    # 笼统的「淀粉」词库里没有，走别名指向 cornstarch（有图）；
+    # 而「木薯淀粉」这种具体的仍然走词库，拿到自己的专属图。
+    check("淀粉 -> cornstarch（有图，不是笼统的 starch）",
+          resolve_ingredient_key("淀粉"), "cornstarch")
+    check("木薯淀粉 走词库，拿到专属图",
+          resolve_ingredient_key("木薯淀粉"), "tapioca-starch")
     check("鸡腿菇 不被「鸡腿」抢走", resolve_ingredient_key("鸡腿菇"), "mushroom")
     check("羊奶 不被「羊」抢走", resolve_ingredient_key("羊奶"), "milk")
 
