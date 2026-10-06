@@ -73,19 +73,26 @@ def main() -> int:
     # 「生抽」「蚝油」这些词库里有更精确的 key（light-soy-sauce / oyster-sauce），
     # 拦成笼统的 seasoning 反而是倒退 —— 所以下面断言的是具体 key。
     for name, want in [
-        ("番茄酱", "seasoning"), ("花生油", "seasoning"),
-        ("食用油", "seasoning"), ("苹果醋", "seasoning"),
+        # 词库里有专属图的，就该用专属图（比笼统的 seasoning 好）
+        ("番茄酱", "ketchup"), ("沙拉酱", "mayonnaise"),
+        ("花生油", "peanut-oil"), ("花生酱", "peanut-butter"),
+        ("芝麻油", "sesame-oil"), ("橄榄油", "olive-oil"),
         ("生抽", "light-soy-sauce"), ("老抽", "dark-soy-sauce"),
         ("酱油", "soy-sauce"), ("蚝油", "oyster-sauce"),
         ("醋", "vinegar"), ("料酒", "cooking-wine"),
         ("豆瓣酱", "doubanjiang"),
+        # 词库**没有**的别名，才留在挡刀规则里兜底
+        ("蕃茄酱", "seasoning"), ("番茄沙司", "seasoning"),
+        ("香油", "seasoning"), ("食用油", "seasoning"),
+        ("苹果醋", "seasoning"), ("千岛酱", "seasoning"),
     ]:
         check(f"{name} -> {want}", resolve_ingredient_key(name), want)
 
     print("\n=== 2. 挡刀区：单字关键词不许抢走别的食材 ===")
     check("牛油果 不被「牛」抢走", resolve_ingredient_key("牛油果"), "avocado")
     check("花生米 不被「米」抢走", resolve_ingredient_key("花生米"), "peanut")
-    check("鸡精 不被「鸡」抢走", resolve_ingredient_key("鸡精"), "seasoning")
+    check("鸡精 不被「鸡」抢走（词库有专属图）",
+          resolve_ingredient_key("鸡精"), "chicken-bouillon")
     # 葡萄柚指向「柚子」（pomelo）而不是单独的 grapefruit ——
     # 清单里只有柚子的图，两者外观接近，用它的图比退到万能图好。
     check("葡萄柚 不被「葡萄」抢走", resolve_ingredient_key("葡萄柚"), "pomelo")
@@ -95,8 +102,10 @@ def main() -> int:
           resolve_ingredient_key("淀粉"), "cornstarch")
     check("木薯淀粉 走词库，拿到专属图",
           resolve_ingredient_key("木薯淀粉"), "tapioca-starch")
-    check("鸡腿菇 不被「鸡腿」抢走", resolve_ingredient_key("鸡腿菇"), "mushroom")
-    check("羊奶 不被「羊」抢走", resolve_ingredient_key("羊奶"), "milk")
+    check("鸡腿菇 不被「鸡腿」抢走（词库有专属图）",
+          resolve_ingredient_key("鸡腿菇"), "shaggy-ink-cap")
+    check("羊奶 不被「羊」抢走（词库有专属图）",
+          resolve_ingredient_key("羊奶"), "goat-milk")
 
     print("\n=== 3. 词库精确匹配（574 条标准名）===")
     for name, want in [
@@ -189,6 +198,28 @@ def main() -> int:
                 dup.append(f"{kw}({seen[kw]} / {key})")
             seen[kw] = key
     check("挡刀区没有重复关键词", dup, [])
+
+    print("\n=== 8b. ⚠️ 挡刀规则不许抢走词库里有专属图的条目 ===")
+    # 这是同一个模式**第三次**出问题：挡刀规则是「当时还没图」时写的，
+    # 图补上之后规则反而在害人（番茄酱配成 generic seasoning、
+    # 花生油配成花生米）。这条断言会自动抓出来。
+    # ⚠️ 不要在函数里再 import 一次 _exists ——
+    # Python 会把整个函数里的这个名字当成局部变量，模块级那个就被遮蔽了，
+    # 结果是 UnboundLocalError（在别的分支用它的时候）。
+    from app.services.ingredient_lexicon import INGREDIENT_ALIASES  # noqa: E402
+
+    stolen = []
+    for name, want in INGREDIENT_ALIASES.items():
+        if not _exists(want):
+            continue
+        got = resolve_ingredient_key(name)
+        if got != want:
+            for keywords, guard_key in GUARD_RULES:
+                if any(w in name for w in keywords) and guard_key == got:
+                    hit = next(w for w in keywords if w in name)
+                    stolen.append(f"{name}（该用 {want}，被「{hit}」抢成 {got}）")
+                    break
+    check("没有词库条目被挡刀规则抢走", stolen, [])
 
     print("\n=== 9. 只返回磁盘上真实存在的图 ===")
     keys_on_disk = set(available_keys())
