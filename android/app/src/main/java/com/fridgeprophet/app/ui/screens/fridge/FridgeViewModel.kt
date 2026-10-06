@@ -10,6 +10,7 @@ import com.fridgeprophet.app.data.remote.dto.InventoryUpdate
 import com.fridgeprophet.app.data.remote.dto.FoodCategoryOut
 import com.fridgeprophet.app.data.repository.InventoryRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -106,28 +107,43 @@ class FridgeViewModel @Inject constructor(
         val s = _state.value
 
         viewModelScope.launch {
-            // 分类顺序和折叠箱一起拉。两个都是小请求，串行比并发好读。
+            // ⚠️ **三个请求必须并发，不能串行。**
             //
-            // 分类顺序从后端拿而不是客户端写死：顺序（蔬菜在前、「其他」垫底）
-            // 只在后端定义了一次，客户端抄一份迟早会不一致。
-            if (s.categoryOrder.isEmpty()) {
-                (repository.categoryOrder() as? ApiResult.Success)?.let {
-                    _state.update { st -> st.copy(categoryOrder = it.data) }
-                }
-            }
-            when (val boxes = repository.categories()) {
-                is ApiResult.Success -> _state.update { it.copy(boxes = boxes.data) }
-                is ApiResult.Failure -> Unit  // 折叠箱拉失败不影响看食材
+            // 生产库在 Supabase（孟买），单次往返实测 169ms。
+            // 串行发这三个就是 169+338+169 ≈ 680ms，加上手机到电脑的 WiFi 延迟，
+            // 用户感觉就是「点一下卡一秒」。
+            // 并发之后总耗时 = 最慢的那个，直接省掉一大半。
+            //
+            // 三个请求互不依赖，天然可以并发。
+            val needCategories = s.categoryOrder.isEmpty()
+
+            val categoriesDeferred = if (needCategories) {
+                async { repository.categoryOrder() }
+            } else null
+            val boxesDeferred = async { repository.categories() }
+            val listDeferred = async {
+                repository.list(
+                    storageLocation = s.locationFilter,
+                    keyword = s.keyword.ifBlank { null },
+                )
             }
 
-            when (val result = repository.list(
-                storageLocation = s.locationFilter,
-                keyword = s.keyword.ifBlank { null },
-            )) {
+            // 先收「食材列表」—— 这是用户真正在等的东西，先渲染它
+            when (val result = listDeferred.await()) {
                 is ApiResult.Success ->
                     _state.update { it.copy(loading = false, items = result.data, error = null) }
                 is ApiResult.Failure ->
                     _state.update { it.copy(loading = false, error = result.message) }
+            }
+
+            // 分类顺序和折叠箱是次要信息，到了再更新界面（不阻塞食材显示）
+            categoriesDeferred?.let { d ->
+                (d.await() as? ApiResult.Success)?.let { ok ->
+                    _state.update { st -> st.copy(categoryOrder = ok.data) }
+                }
+            }
+            (boxesDeferred.await() as? ApiResult.Success)?.let { ok ->
+                _state.update { st -> st.copy(boxes = ok.data) }
             }
         }
     }

@@ -50,11 +50,46 @@ def _visible_category(db: DbSession, user_id: int, category_id: int) -> FoodCate
     return row
 
 
+def _load_categories_with_members(
+    db: DbSession, user_id: int
+) -> list[tuple[FoodCategory, list[int]]]:
+    """一次查完「所有折叠箱 + 各自有哪些食材」。
+
+    ## 为什么要合成一次查询
+
+    生产库在 Supabase（孟买），**一次往返实测 169ms**。
+    原来分两步（先查箱子、再查关联），列表接口就要 338ms ——
+    而它是冰箱页并发请求里**最慢的那个**，直接决定页面出内容的时间。
+
+    合成一次 LEFT JOIN 之后省掉一整次往返。
+
+    ⚠️ 用 outerjoin 而不是 join：**空箱子也要返回** ——
+    用户刚建完箱子还没放东西，用 inner join 会让它凭空消失。
+    """
+    rows = db.execute(
+        select(FoodCategory, FoodCategoryItem.inventory_id)
+        .outerjoin(FoodCategoryItem, FoodCategoryItem.category_id == FoodCategory.id)
+        .where(FoodCategory.user_id.in_(visible_user_ids(db, user_id)))
+        # 先按用户指定的顺序，再按创建时间 —— 用户没拖过顺序时就是「先建的在前」
+        .order_by(FoodCategory.sort_order, FoodCategory.id)
+    ).all()
+
+    result: list[tuple[FoodCategory, list[int]]] = []
+    for category, inventory_id in rows:
+        if result and result[-1][0].id == category.id:
+            # 同一个箱子的后续行（LEFT JOIN 会为每个成员产出一行）
+            if inventory_id is not None:
+                result[-1][1].append(inventory_id)
+        else:
+            result.append((category, [inventory_id] if inventory_id is not None else []))
+    return result
+
+
 def _member_ids(db: DbSession, category_ids: list[int]) -> dict[int, list[int]]:
     """一次查出这些箱子里各有哪些食材 id。
 
-    不用「逐个箱子查一次」是因为列表接口要返回所有箱子，
-    箱子的数量虽然不多（上限 12），但没必要 N+1 次查询。
+    只用于**单箱操作**（加/移食材后返回最新状态）——
+    列表接口走 `_load_categories_with_members()`，那边合成一次查询。
     """
     if not category_ids:
         return {}
@@ -95,15 +130,11 @@ def _check_inventory_visible(db: DbSession, user_id: int, inventory_ids: list[in
 
 @router.get("", response_model=list[FoodCategoryOut], summary="列出所有折叠箱")
 def list_categories(user: CurrentUser, db: DbSession) -> list[FoodCategoryOut]:
-    rows = db.execute(
-        select(FoodCategory)
-        .where(FoodCategory.user_id.in_(visible_user_ids(db, user.id)))
-        # 先按用户指定的顺序，再按创建时间 —— 用户没拖过顺序时就是「先建的在前」
-        .order_by(FoodCategory.sort_order, FoodCategory.id)
-    ).scalars().all()
-
-    members = _member_ids(db, [r.id for r in rows])
-    return [_to_out(r, members.get(r.id, [])) for r in rows]
+    # 一次查询搞定「箱子 + 成员」，见 _load_categories_with_members 的说明
+    return [
+        _to_out(row, member_ids)
+        for row, member_ids in _load_categories_with_members(db, user.id)
+    ]
 
 
 @router.post("", response_model=FoodCategoryOut, status_code=status.HTTP_201_CREATED,

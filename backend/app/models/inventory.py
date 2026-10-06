@@ -39,9 +39,18 @@ class FoodInventory(Base):
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
     )
 
-    def refresh_freshness(self, today: date | None = None) -> str:
-        """按剩余天数推导新鲜度。过期前 2 天内标为「尽快食用」。"""
+    def refresh_freshness(self, today: date | None = None) -> bool:
+        """按剩余天数推导新鲜度。过期前 2 天内标为「尽快食用」。
+
+        **返回「有没有真的变化」**，调用方据此决定要不要 commit。
+
+        为什么要这个返回值：生产库在 Supabase（孟买），一次往返 169ms，
+        而 commit 又要一次往返。以前每个**读**接口都无条件 commit，
+        等于每次列表查询白多花 169ms —— 用户感觉就是「点一下卡半秒」。
+        绝大多数请求里新鲜度根本没变（今天没跨天），根本不需要写库。
+        """
         today = today or date.today()
+        before = self.freshness
         if self.expiry_date is None:
             self.freshness = "正常"
         else:
@@ -54,4 +63,5 @@ class FoodInventory(Base):
                 self.freshness = "正常"
             else:
                 self.freshness = "新鲜"
+        return self.freshness != before
         return self.freshness

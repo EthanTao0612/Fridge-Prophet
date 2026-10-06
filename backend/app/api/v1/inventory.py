@@ -87,6 +87,28 @@ def _merge_expiry(old: date | None, new: date) -> date:
     return new if old is None else min(old, new)
 
 
+def _refresh_and_commit(db: DbSession, items: list[FoodInventory], today: date) -> None:
+    """刷新新鲜度，**只在真的有变化时才写库**。
+
+    ## 为什么要这么抠
+
+    生产库在 Supabase（孟买），实测**一次往返 169ms**，而 commit 又是一次往返。
+    以前每个**读**接口都无条件 `db.commit()` —— 等于每次列表查询白花 169ms，
+    用户感觉就是「点一下卡半秒」。
+
+    而绝大多数请求里新鲜度根本没变（今天没跨天），完全不需要写库。
+
+    ⚠️ 注意不能用 `any(...)` —— 它会在第一个 True 处短路，
+    后面的食材就不会被刷新了。必须老老实实跑完整个循环。
+    """
+    changed = False
+    for it in items:
+        if it.refresh_freshness(today):
+            changed = True
+    if changed:
+        db.commit()
+
+
 def _to_out(item: FoodInventory, today: date) -> InventoryOut:
     """ORM 行 → 返回体。**所有返回食材的地方都必须走这里**。
 
@@ -149,9 +171,7 @@ def list_inventory(
 
     items = q.order_by(FoodInventory.expiry_date.asc().nullslast()).all()
     today = date.today()
-    for it in items:
-        it.refresh_freshness(today)
-    db.commit()
+    _refresh_and_commit(db, items, today)
     return [_to_out(it, today) for it in items]
 
 
@@ -174,8 +194,10 @@ def list_expiring(
         .all()
     )
     out = []
+    changed = False
     for it in items:
-        it.refresh_freshness(today)
+        if it.refresh_freshness(today):
+            changed = True
         out.append(
             ExpiringItem(
                 id=it.id,
@@ -187,7 +209,8 @@ def list_expiring(
                 freshness=it.freshness,
             )
         )
-    db.commit()
+    if changed:
+        db.commit()
     return out
 
 
@@ -195,9 +218,7 @@ def list_expiring(
 def inventory_stats(user: CurrentUser, db: DbSession) -> dict:
     today = date.today()
     items = db.query(FoodInventory).filter(FoodInventory.user_id.in_(_visible(db, user.id))).all()
-    for it in items:
-        it.refresh_freshness(today)
-    db.commit()
+    _refresh_and_commit(db, items, today)
 
     by_location: dict[str, int] = {}
     for it in items:
