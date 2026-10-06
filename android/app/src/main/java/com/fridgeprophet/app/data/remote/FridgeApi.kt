@@ -45,6 +45,8 @@ import com.fridgeprophet.app.data.remote.dto.RecipeGenerateRequest
 import com.fridgeprophet.app.data.remote.dto.RecipeGenerateResponse
 import com.fridgeprophet.app.data.remote.dto.RecipeOut
 import com.fridgeprophet.app.data.remote.dto.RegisterRequest
+import com.fridgeprophet.app.data.remote.dto.SendCodeRequest
+import com.fridgeprophet.app.data.remote.dto.SendCodeResponse
 import com.fridgeprophet.app.data.remote.dto.ScanConfirmRequest
 import com.fridgeprophet.app.data.remote.dto.ScanResult
 import com.fridgeprophet.app.data.remote.dto.ShoppingApplyRequest
@@ -99,6 +101,9 @@ import retrofit2.http.Query
 interface FridgeApi {
 
     // ---------- 鉴权 ----------
+
+    @POST("api/v1/auth/send-code")
+    suspend fun sendCode(@Body body: SendCodeRequest): SendCodeResponse
 
     @POST("api/v1/auth/register")
     suspend fun register(@Body body: RegisterRequest): TokenResponse

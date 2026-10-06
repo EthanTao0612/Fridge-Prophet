@@ -11,10 +11,32 @@ import kotlinx.serialization.Serializable
 // ---------- 鉴权 ----------
 
 @Serializable
+data class SendCodeRequest(
+    val email: String,
+)
+
+/**
+ * 发验证码的响应。
+ *
+ * ⚠️ 后端**故意不区分**「邮箱已注册」和「未注册」——
+ * 两种情况返回的结构完全一样，防止有人拿这个公开接口
+ * 批量探测「某个邮箱在不在这个平台上」。
+ * 所以这里也别去猜，按 sent 走就行。
+ */
+@Serializable
+data class SendCodeResponse(
+    val sent: Boolean = false,
+    @SerialName("cooldown_seconds") val cooldownSeconds: Int = 60,
+    val message: String = "",
+)
+
+@Serializable
 data class RegisterRequest(
     val email: String,
     val password: String,
     val nickname: String = "",
+    /** 邮箱验证码。必填 —— 后端没有它直接 422。 */
+    val code: String,
 )
 
 @Serializable

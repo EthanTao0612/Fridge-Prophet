@@ -82,6 +82,51 @@ fun AuthScreen(
                 )
 
                 if (state.isRegisterMode) {
+                    // 验证码 + 获取按钮并排。
+                    // 输入框占满剩余宽度，按钮固定宽度 —— 反过来的话按钮会被
+                    // 长邮箱地址挤变形。
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        OutlinedTextField(
+                            value = state.code,
+                            onValueChange = viewModel::onCodeChange,
+                            label = { Text("邮箱验证码") },
+                            placeholder = { Text("6 位数字") },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(
+                                keyboardType = KeyboardType.NumberPassword,
+                                imeAction = ImeAction.Next,
+                            ),
+                            modifier = Modifier.weight(1f),
+                        )
+                        Button(
+                            onClick = viewModel::sendCode,
+                            enabled = state.canSendCode,
+                            modifier = Modifier.height(56.dp),
+                        ) {
+                            when {
+                                state.sendingCode -> CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.onPrimary,
+                                )
+                                // 倒计时用服务端给的秒数，不写死 60
+                                state.cooldown > 0 -> Text("${state.cooldown}s")
+                                else -> Text("获取验证码")
+                            }
+                        }
+                    }
+                    Text(
+                        text = "需要真实邮箱 —— 注册前会发一封验证码邮件给你",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+
+                if (state.isRegisterMode) {
                     OutlinedTextField(
                         value = state.nickname,
                         onValueChange = viewModel::onNicknameChange,
@@ -103,6 +148,16 @@ fun AuthScreen(
                         imeAction = ImeAction.Done,
                     ),
                     modifier = Modifier.fillMaxWidth(),
+                )
+            }
+
+            // 成功提示用主色，错误用红色 —— 两者分开显示，
+            // 合成一个 Text 的话发码成功的提示会被下一次报错清掉
+            state.notice?.let { message ->
+                Text(
+                    text = message,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.primary,
                 )
             }
 
