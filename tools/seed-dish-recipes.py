@@ -6,27 +6,14 @@
     .venv/Scripts/python.exe ../tools/seed-dish-recipes.py            # 写入 / 更新
     .venv/Scripts/python.exe ../tools/seed-dish-recipes.py --reset    # 删掉内置的重新灌
 
-## 为什么 user_id 写 NULL
+## 真正的实现在哪
 
-`recipes.user_id` 为 NULL 表示「系统内置菜谱，所有用户可见」
-（见 `app/models/recipe.py` 的注释）。
+核心逻辑在 **`app/services/dish_seed.py`** —— 这里只是一层命令行外壳。
 
-这样 192 道菜在库里**只有一份**，任何用户 —— 包括评委新注册的账号 ——
-点开推荐菜都是秒开，不用为每个用户各存一份，也不用调 AI。
-
-## 幂等
-
-按菜名 upsert，而且**只动 `user_id IS NULL` 的行**，绝不碰用户自己的菜谱。
-所以改完 JSON 直接重跑就会更新，不会产生重复。
-
-## 为什么用固定旧时间戳
-
-列表接口按 `created_at` 倒序。如果内置菜谱拿「现在」当创建时间，
-192 条会把用户自己刚生成的菜全挤到后面去，用户会以为自己的菜没了。
-
-所以给一个固定的旧基准时间（2026-01-01）+ 按菜名序号递增：
-既保证内置菜谱永远排在用户自己的菜之后，
-又保证内置菜谱之间顺序稳定（不会每次查库都变）。
+为什么分开：**测试也需要灌同一份数据**。`/recipes/generate` 现在是
+「查库挑菜」（不调 AI），测试库空的话它永远返回空。
+如果测试里手抄一遍灌库逻辑，两份实现迟早会不一致
+（改了 CSV 忘了改测试），那时候测试测的就不是线上跑的东西了。
 
 ## 什么时候要跑
 
@@ -37,76 +24,17 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 BACKEND_DIR = Path(__file__).resolve().parents[1] / "backend"
 sys.path.insert(0, str(BACKEND_DIR))
 
 from app.db.session import SessionLocal  # noqa: E402
-from app.models.recipe import Recipe, RecipeIngredient  # noqa: E402
-from app.services.food_image_service import resolve_image_url  # noqa: E402
-from app.services.recipe_service import clean_unit  # noqa: E402
+from app.models.recipe import Recipe  # noqa: E402
+from app.services import dish_seed  # noqa: E402
 
-DATA_PATH = BACKEND_DIR / "data" / "dish-recipes.json"
-
-# 内置菜谱的创建时间基准。挑一个明显早于任何真实使用的日期，
-# 保证它们永远排在用户自己的菜谱之后。
-BUILTIN_EPOCH = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
-
-
-def _load() -> dict:
-    if not DATA_PATH.exists():
-        print(f"找不到 {DATA_PATH}")
-        print("先跑 tools/generate-dish-recipes.py 生成它。")
-        sys.exit(1)
-    return json.loads(DATA_PATH.read_text(encoding="utf-8"))
-
-
-def _builtin_rows(db) -> dict[str, Recipe]:
-    """库里现有的内置菜谱，按菜名索引。"""
-    rows = db.query(Recipe).filter(Recipe.user_id.is_(None)).all()
-    return {r.name: r for r in rows}
-
-
-def _apply(row: Recipe, dish: str, payload: dict, index: int) -> None:
-    """把 JSON 里的字段刷到这一行上。"""
-    ingredients = payload.get("ingredients") or []
-
-    row.description = payload.get("description") or ""
-    row.time_minutes = int(payload.get("time_minutes") or 30)
-    row.difficulty = payload.get("difficulty") or "easy"
-    row.steps = list(payload.get("steps") or [])
-    row.nutrition = dict(payload.get("nutrition") or {})
-    row.tags = list(payload.get("tags") or [])
-    row.source = "builtin"
-    # 顺手把配图算出来存下 —— 否则每次读列表都要重算一遍
-    row.image_url = row.image_url or resolve_image_url(
-        dish, [i.get("name", "") for i in ingredients]
-    )
-    # 序号决定内置菜谱之间的相对顺序，所以每次跑结果都一样
-    row.created_at = BUILTIN_EPOCH + timedelta(seconds=index)
-
-    # 配料整批换掉。`cascade="all, delete-orphan"` 会负责删掉旧的，
-    # 所以直接赋新列表就行 —— 不要手动 delete 再 add，容易漏。
-    #
-    # ⚠️ `unit` 必须过 `clean_unit`：模型偶尔在单位字段里塞注释
-    #（实测「汤匙（即oyster-sauce）」17 个字、「个（可选）」），
-    # 而 `recipe_ingredients.unit` 是 VARCHAR(16)。
-    # SQLite 不校验长度，所以本地测不出来；Postgres 会直接
-    # StringDataRightTruncation → 整个灌库失败。
-    row.ingredients = [
-        RecipeIngredient(
-            name=str(i.get("name", "")).strip(),
-            quantity=float(i.get("quantity") or 0),
-            unit=clean_unit(str(i.get("unit") or "g")),
-            optional=bool(i.get("optional")),
-        )
-        for i in ingredients
-        if str(i.get("name", "")).strip()
-    ]
+DATA_PATH = dish_seed.data_path(BACKEND_DIR)
 
 
 def main() -> int:
@@ -117,34 +45,27 @@ def main() -> int:
                         help="先删掉所有内置菜谱再重新灌（不会碰用户自己的）")
     args = parser.parse_args()
 
-    data = _load()
+    if not DATA_PATH.exists():
+        print(f"找不到 {DATA_PATH}")
+        print("先跑 tools/generate-dish-recipes.py 生成它。")
+        return 1
+
+    data = dish_seed.load_dish_data(DATA_PATH)
     if not data:
         print(f"{DATA_PATH.name} 是空的，先跑生成脚本。")
         return 1
 
     db = SessionLocal()
     try:
-        existing = _builtin_rows(db)
+        existing = dish_seed.builtin_rows(db)
         print(f"JSON 里 {len(data)} 道菜，库里现有内置菜谱 {len(existing)} 道")
 
-        if args.reset and not args.check:
-            removed = db.query(Recipe).filter(Recipe.user_id.is_(None)).delete(
-                synchronize_session=False
-            )
-            db.commit()
-            existing = {}
-            print(f"--reset：已删除 {removed} 条内置菜谱（用户自己的没动）")
-
         missing = [d for d in sorted(data) if d not in existing]
-        outdated = []
-        for dish in sorted(data):
-            row = existing.get(dish)
-            if row is None:
-                continue
-            payload = data[dish]
-            if (row.steps or []) != list(payload.get("steps") or []):
-                outdated.append(dish)
-
+        outdated = [
+            d for d in sorted(data)
+            if d in existing
+            and (existing[d].steps or []) != list(data[d].get("steps") or [])
+        ]
         print(f"  待新建 {len(missing)} 道，内容有变化 {len(outdated)} 道")
 
         if args.check:
@@ -163,19 +84,7 @@ def main() -> int:
             print("（--check 模式没有写任何数据）")
             return 0
 
-        created = updated = 0
-        for index, dish in enumerate(sorted(data)):
-            payload = data[dish]
-            row = existing.get(dish)
-            if row is None:
-                row = Recipe(user_id=None, name=dish, source="builtin")
-                db.add(row)
-                created += 1
-            else:
-                updated += 1
-            _apply(row, dish, payload, index)
-
-        db.commit()
+        created, updated = dish_seed.seed_dish_library(db, data, reset=args.reset)
 
         total = db.query(Recipe).filter(Recipe.user_id.is_(None)).count()
         print()

@@ -17,6 +17,7 @@ import com.fridgeprophet.app.data.repository.ProfileRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -85,8 +86,11 @@ class ProfileViewModel @Inject constructor(
         if (!silent) _state.update { it.copy(loading = true, error = null) }
 
         viewModelScope.launch {
-            val profileResult = profileRepository.getProfile()
-            val insightsResult = profileRepository.preferenceInsights()
+            // ⚠️ 两个请求**并发**发，不要串行（孟买单次往返 169ms）
+            val profileDeferred = async { profileRepository.getProfile() }
+            val insightsDeferred = async { profileRepository.preferenceInsights() }
+            val profileResult = profileDeferred.await()
+            val insightsResult = insightsDeferred.await()
 
             val failure = profileResult as? ApiResult.Failure
 

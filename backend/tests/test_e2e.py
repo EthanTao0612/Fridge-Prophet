@@ -103,6 +103,36 @@ def register(client, email: str, password: str = "test123456", nickname: str = "
     return client.post("/api/v1/auth/register", json=body)
 
 
+def _seed_dish_library() -> int:
+    """把菜品库那 192 道灌进测试库，返回灌完之后的条数。
+
+    ## 为什么测试也必须灌
+
+    `/recipes/generate` 现在是**查库挑菜**（不调 AI）——
+    菜品库里每道菜都标了必需食材，用户冰箱里有就直接返回，不需要模型。
+
+    所以测试库是空的话，这个接口永远返回空，后面一堆断言会挂 ——
+    而失败信息看起来像「生成接口坏了」，排查方向全错。
+
+    ## 为什么调 app 里的函数，而不是在测试里手抄一遍
+
+    用的是**和线上同一份 JSON、同一段逻辑**（`app/services/dish_seed.py`）。
+    手抄一遍的话，两份实现迟早会不一致（改了数据忘了改测试），
+    那时候测试测的就不是线上跑的东西了。
+    """
+    from app.db.session import SessionLocal
+    from app.models.recipe import Recipe
+    from app.services import dish_seed
+
+    data = dish_seed.load_dish_data(dish_seed.data_path(BACKEND_DIR))
+    db = SessionLocal()
+    try:
+        dish_seed.seed_dish_library(db, data)
+        return db.query(Recipe).filter(Recipe.user_id.is_(None)).count()
+    finally:
+        db.close()
+
+
 def main() -> int:
     # 1x1 透明 PNG，用来冒充冰箱照片
     fake_png = base64.b64decode(
@@ -111,6 +141,11 @@ def main() -> int:
     )
 
     with TestClient(app) as client:
+        # ⚠️ 先把菜品库灌进测试库。理由见 _seed_dish_library 的说明 ——
+        # `/recipes/generate` 改成查库之后，库是空的它就没有东西可返回。
+        _n = _seed_dish_library()
+        check("菜品库已灌入测试库（192 道）", _n == 192, f"实际 {_n} 道")
+
         print("\n=== 0. 系统接口 ===")
         r = client.get("/health")
         check("健康检查", r.status_code == 200 and r.json()["status"] == "healthy", r.text[:200])
@@ -567,48 +602,63 @@ def main() -> int:
                   all(x["image_url"] is None for x in r.json()),
                   "没有图片却返回了 URL，客户端会显示裂图")
 
-        print("\n=== 6c. 菜谱去重（回归） ===")
-        # 回归：修复前 /generate 是无条件 INSERT。用户反复点「生成新菜谱」，
-        # 同名菜就会在库里攒成十几条（实测「番茄鸡蛋豆腐」重复 11 次），
-        # 菜谱页看起来就是同一道菜刷屏。这里连打 3 次验证不再发生。
+        print("\n=== 6c. 菜谱生成：查库挑菜（不调 AI）+ 不重复 ===")
+        # `/generate` 从 2026-10-06 起**不再调 AI** ——
+        # 菜品库里每道菜都标了必需食材，冰箱里有就直接返回，查表就能算。
+        #
+        # 所以这一节测的东西变了：
+        #   ① 反复点「生成新菜谱」不能把同一道菜重复塞进列表
+        #   ② 每次都该挑**新的**（已经有的不再挑）
+        #   ③ 库里允许同名 —— 内置一份 + 用户自己一份，这是设计不是 bug
         import sqlite3  # noqa: PLC0415
 
         before = client.get("/api/v1/recipes", headers=headers).json()
-        before_names = [x["name"] for x in before]
+        before_names = {x["name"] for x in before}
 
         for _ in range(3):
             r = client.post("/api/v1/recipes/generate", headers=headers,
                             json={"count": 3, "prioritize_expiring": True, "save": True})
             check("反复生成仍然 200", r.status_code == 200, r.text[:300])
+            check("生成的是查库结果（不调 AI）",
+                  r.json().get("model") == "菜品库", r.text[:200])
 
         after = client.get("/api/v1/recipes", headers=headers).json()
         after_names = [x["name"] for x in after]
 
+        # 列表卡片不能有同名 —— 用户看到两张一样的卡会以为界面坏了
         check("列表里没有同名菜谱",
               len(after_names) == len(set(after_names)),
               f"重名的有：{sorted({n for n in after_names if after_names.count(n) > 1})}")
 
-        # 测试环境强制 MOCK，每次返回的都是同样三道菜，
-        # 所以「总数不增长」可以严格断言（AI 模式下菜名会变，不能这么测）
-        check("MOCK 下反复生成不新增行",
-              len(after) == len(before),
-              f"{len(before)} → {len(after)} 条，说明又在重复入库")
+        # 每次都挑新的：第二次生成不该把第一次那几道再给一遍
+        check("第二次生成挑的是新菜（已有的不再重复挑）",
+              len(set(after_names)) > len(before_names),
+              f"{sorted(before_names)} → {sorted(set(after_names))}")
 
-        # 直接查库，确认物理行数也没涨 —— 列表层去重只是兜底，
-        # 库里如果还在堆重复行，用户删一条就会冒出另一条
+        # 直接查库：**用户自己的**行里不能有同名。
+        #
+        # ⚠️ 不能不带条件地 `GROUP BY name` —— 内置菜谱（user_id 为 NULL）
+        # 和用户自己的副本**本来就同名**，那是设计（一份共用的标准做法 +
+        # 一份用户自己的、可删可改）。不限定 user_id 的话这条断言永远失败。
         conn = sqlite3.connect(_DB_FILE)
         dup_rows = conn.execute(
-            "SELECT name, COUNT(*) c FROM recipes GROUP BY name HAVING c > 1"
+            "SELECT name, COUNT(*) c FROM recipes"
+            " WHERE user_id IS NOT NULL GROUP BY name HAVING c > 1"
         ).fetchall()
         conn.close()
-        check("数据库里没有同名菜谱行", not dup_rows, str(dup_rows))
+        check("用户自己的菜谱里没有同名行", not dup_rows, str(dup_rows))
 
-        # 单次返回内部也不能重名（模型偶尔把同一道菜给两遍）
+        # 单次返回内部也不能重名
         r = client.post("/api/v1/recipes/generate", headers=headers,
                         json={"count": 3, "save": False})
         gen_names = [x["name"] for x in r.json().get("recipes", [])]
         check("单次生成的返回里没有重名",
               len(gen_names) == len(set(gen_names)), str(gen_names))
+        check("单次生成返回的菜都带完整做法（步骤非空）",
+              all(x["steps"] for x in r.json().get("recipes", [])), r.text[:300])
+        check("单次生成返回的菜都带营养估算",
+              all((x["nutrition"] or {}).get("calories_kcal")
+                  for x in r.json().get("recipes", [])), r.text[:300])
 
         # 反向验证：去重不能变成「这道菜以后永远不再生成」。
         # 删掉一道后重新生成，它必须能回来。
@@ -773,10 +823,6 @@ def main() -> int:
 
         print("\n=== 6d. 做菜扣库存 ===")
         # 造一份确定的库存，这样扣减结果能精确断言。
-        # 选「番茄鸡蛋豆腐」当样本，它正好覆盖三种情况：
-        #   鸡蛋   → 单位一致，能自动算
-        #   豆腐   → 库存记「盒」、菜谱要「g」，单位对不上
-        #   小葱   → 冰箱里压根没有
         client.delete("/api/v1/inventory", headers=headers)
         for food, qty, unit in (("鸡蛋", 6, "个"), ("西红柿", 3, "个"), ("豆腐", 1, "盒")):
             client.post("/api/v1/inventory", headers=headers,
@@ -787,11 +833,45 @@ def main() -> int:
             hit = next((x for x in rows if x["food_name"] == food), None)
             return None if hit is None else hit["quantity"]
 
-        pool = client.get("/api/v1/recipes", headers=headers).json()
-        target = next((x for x in pool if x["name"] == "番茄鸡蛋豆腐"), None)
-        check("找到样本菜谱「番茄鸡蛋豆腐」", target is not None,
-              str([x["name"] for x in pool]))
-        cook_id = target["id"] if target else pool[0]["id"]
+        # ---- 造一份**确定的样本菜谱** ----
+        #
+        # 为什么要自己造，而不用菜品库里的菜：
+        # 扣减逻辑要覆盖三种情况 ——
+        #   鸡蛋   → 单位一致，能自动算
+        #   豆腐   → 库存记「盒」、菜谱要「g」，单位对不上
+        #   小葱   → 冰箱里压根没有
+        # 而菜品库那 192 道的食材和单位都是 AI 生成的、不确定，
+        # 拿它们做精确断言（「建议扣 2 个」）会天天挂。
+        #
+        # 这份是 `user_id = NULL` 的**内置菜谱**，走的是和生产完全一样的
+        # 代码路径 —— `/cook-plan` 和 `/cook` 只按 id 查，不关心菜谱从哪来。
+        import json as _json3  # noqa: PLC0415
+
+        _SAMPLE = "番茄鸡蛋豆腐"
+        conn = sqlite3.connect(_DB_FILE)
+        cur = conn.execute(
+            "INSERT INTO recipes"
+            " (user_id, name, description, time_minutes, difficulty,"
+            "  steps, nutrition, tags, source, created_at)"
+            " VALUES (NULL, ?, '扣减测试专用', 10, 'easy', ?, ?, ?, 'builtin',"
+            " '2026-01-02 00:00:00')",
+            (
+                _SAMPLE,
+                _json3.dumps(["步骤一", "步骤二"]),
+                _json3.dumps({"calories_kcal": 200}),
+                _json3.dumps([]),
+            ),
+        )
+        cook_id = cur.lastrowid
+        for _nm, _qty, _unit in (("鸡蛋", 2, "个"), ("豆腐", 300, "g"), ("小葱", 2, "根")):
+            conn.execute(
+                "INSERT INTO recipe_ingredients"
+                " (recipe_id, name, quantity, unit, optional) VALUES (?, ?, ?, ?, 0)",
+                (cook_id, _nm, _qty, _unit),
+            )
+        conn.commit()
+        conn.close()
+        check("已造出样本菜谱（内置、含三种食材情况）", bool(cook_id))
 
         # ---- 预览：只算不扣 ----
         r = client.get(f"/api/v1/recipes/{cook_id}/cook-plan", headers=headers)
@@ -948,14 +1028,16 @@ def main() -> int:
 
         print("\n=== 7. 菜谱详情与行为反馈 ===")
         r = client.get("/api/v1/recipes", headers=headers)
-        # ⚠️ 只数**用户自己的**菜谱。
+        # ⚠️ 列表返回的是**用户自己的**菜谱（`editable` 范围）。
         #
-        # 列表接口现在同时返回「自己生成的 + 系统内置的菜品库」，
-        # 生产库里内置的有 192 道 —— 直接数总数的话这个断言
-        # 在真实环境下必然失败（而且失败原因看起来会像「多了几道菜」，
-        # 很难联想到是内置菜谱）。
+        # 菜品库那 192 道是内置的（`user_id` 为 NULL），**故意不进这个列表** ——
+        # 它们是按需通过「推荐」标签浏览的，全塞进来会让列表拉 482KB / 4 秒。
+        # 所以这里断言「都是用户自己的」，而不是去数总数。
         mine = [x for x in r.json() if not x.get("is_builtin")] if r.status_code == 200 else []
-        check("菜谱列表", r.status_code == 200 and len(mine) == 3, r.text[:300])
+        check("菜谱列表", r.status_code == 200 and len(mine) == len(r.json()), r.text[:300])
+        check("列表里有前面生成的菜", len(mine) >= 3, f"实际 {len(mine)} 道")
+        check("列表里每道菜都带完整做法",
+              all(x["steps"] for x in mine), str([x["name"] for x in mine if not x["steps"]]))
         recipe_id = mine[0]["id"] if mine else 0
 
         # 列表必须用当前库存重算缺料，否则「食材齐全」筛选和「缺 N 样」标记全是假的
@@ -1654,8 +1736,12 @@ def main() -> int:
 
         print("\n=== 17e. AI 每日配额（给百炼额度兜底）===")
         # 后端原本**没有任何限流**，而注册是开放的 —— 任何人发现域名后
-        # 注册个账号就能反复调 /vision/scan 和 /recipes/generate，
-        # 每一次都在花项目自己的钱。这一节钉住那两道闸。
+        # 注册个账号就能反复调接口花项目自己的钱。这一节钉住那两道闸。
+        #
+        # ⚠️ 用的接口是 `/vision/scan`（拍照识别）。
+        # `/recipes/generate` 现在是**查库挑菜、不调 AI**，
+        # 所以它**不该**扣配额 —— 那正是这个改动要的效果。
+        # 拿它来测配额的话会「永远 200」，看起来像配额坏了。
         from app.core.config import settings as _cfg2  # noqa: PLC0415
         import sqlite3 as _sq2  # noqa: PLC0415
 
@@ -1664,6 +1750,14 @@ def main() -> int:
             conn.execute("DELETE FROM ai_usage")
             conn.commit()
             conn.close()
+
+        def _ai_call():
+            """一次真实的 AI 调用（拍照识别）。"""
+            return client.post(
+                "/api/v1/vision/scan",
+                headers=headers,
+                files={"file": ("fridge.png", fake_png, "image/png")},
+            )
 
         _clear_usage()
         _old_u, _old_g = _cfg2.DAILY_AI_LIMIT_PER_USER, _cfg2.DAILY_AI_LIMIT_GLOBAL
@@ -1676,17 +1770,22 @@ def main() -> int:
                   r.json().get("ai_quota_left") == 3, r.text[:200])
 
             for i in range(3):
-                r = client.post("/api/v1/recipes/generate", headers=headers,
-                                json={"count": 1, "save": False})
+                r = _ai_call()
                 check(f"额度内第 {i + 1} 次放行", r.status_code == 200, r.text[:200])
 
-            r = client.post("/api/v1/recipes/generate", headers=headers,
-                            json={"count": 1, "save": False})
+            r = _ai_call()
             check("超出额度返回 429", r.status_code == 429, r.text[:200])
             check("429 的文案说清了原因并给了替代方案",
                   "额度" in r.text and "推荐" in r.text, r.text[:300])
             check("429 带 Retry-After 头",
                   r.headers.get("retry-after") is not None, str(dict(r.headers)))
+
+            # ⭐ `/recipes/generate` 不该扣配额 —— 它现在是查库挑菜。
+            # 这条是这次改动的核心收益，单独钉住。
+            r = client.post("/api/v1/recipes/generate", headers=headers,
+                            json={"count": 1, "save": False})
+            check("配额用完时「生成菜谱」仍然可用（因为不调 AI）",
+                  r.status_code == 200, r.text[:200])
 
             # 全站那道闸：用户额度放大，但全站卡死。
             # 只有按用户限流是不够的 —— 攻击者注册 100 个账号就拿到 100 倍额度。
@@ -1694,10 +1793,8 @@ def main() -> int:
             _cfg2.DAILY_AI_LIMIT_GLOBAL = 3
             _clear_usage()
             for _ in range(3):
-                client.post("/api/v1/recipes/generate", headers=headers,
-                            json={"count": 1, "save": False})
-            r = client.post("/api/v1/recipes/generate", headers=headers,
-                            json={"count": 1, "save": False})
+                _ai_call()
+            r = _ai_call()
             check("全站额度用完也返回 429", r.status_code == 429, r.text[:200])
 
             # 不调 AI 的接口不该被拦 —— 否则「额度用完 = App 不能用」，

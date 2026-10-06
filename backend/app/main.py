@@ -133,9 +133,42 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
 
 
 app.include_router(api_router, prefix=settings.API_PREFIX)
-app.mount("/uploads", StaticFiles(directory=settings.UPLOAD_DIR), name="uploads")
+class CachedStaticFiles(StaticFiles):
+    """静态文件额外加一个 `Cache-Control`。
+
+    ## 为什么必须加
+
+    FastAPI 的 `StaticFiles` 只发 `etag` / `last-modified`，
+    **不发 `Cache-Control`**。而客户端拿到没有 `Cache-Control` 的响应时，
+    **每次都要回来问一遍**「这个还能用吗」—— 也就是每次发一个条件请求、
+    拿一个 304。
+
+    实测（后端日志）：打开冰箱页触发 **35 个食材图请求**，
+    菜谱页的推荐列表再触发 **40 多个菜谱图请求**，全是 304。
+    局域网里还能忍，走公网（尤其是移动网络）时每个 304 都是一次完整往返，
+    滚动列表会明显发顿。
+
+    加了 `max-age` 之后，客户端在这段时间内直接用本地副本，一个请求都不发。
+
+    ## 为什么是 1 天而不是 7 天
+
+    图片**按 key 命名**（`tomato.jpg`），重新生成图片时文件名不变 ——
+    缓存太久的话用户会一直看到旧图。1 天是个平衡：
+    同一个会话内完全不重复请求，换图最多 1 天后生效。
+
+    （部署时 nginx 那边也配了 `expires 7d`。两边都配是因为
+     开发环境没有 nginx，只配一边的话本地开发体验比线上还差。）
+    """
+
+    def file_response(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        resp = super().file_response(*args, **kwargs)
+        resp.headers["Cache-Control"] = "public, max-age=86400"
+        return resp
+
+
+app.mount("/uploads", CachedStaticFiles(directory=settings.UPLOAD_DIR), name="uploads")
 # 项目自带的静态资源（菜谱配图等），跟着 Git 走
-app.mount("/static", StaticFiles(directory=settings.STATIC_DIR), name="static")
+app.mount("/static", CachedStaticFiles(directory=settings.STATIC_DIR), name="static")
 
 
 @app.get("/", tags=["系统"], summary="服务信息")

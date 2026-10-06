@@ -37,6 +37,10 @@ from app.services.recipe_service import (
 
 router = APIRouter(prefix="/recipes", tags=["AI 菜谱"])
 
+# `/generate` 返回的「模型名」。它其实**没调模型** —— 用这个值让客户端
+# 能区分「这次是从菜品库挑的」和「这次是 AI 编的」。
+LIBRARY_MODEL = "菜品库"
+
 
 def _load_inventory(db: Session, user_id: int) -> list[FoodInventory]:
     """取「这个用户能看到的库存」—— 也就是全家的冰箱。
@@ -114,7 +118,15 @@ def _with_availability(out: RecipeOut, inventory: list[FoodInventory]) -> Recipe
     return out
 
 
-def _persist(db: Session, user_id: int, recipe: RecipeOut) -> Recipe:
+def _persist(
+    db: Session, user_id: int, recipe: RecipeOut, *, source: str = "ai"
+) -> Recipe:
+    """新建一条用户自己的菜谱。
+
+    `source` 记的是**这条菜谱从哪来**：`ai`（模型现编）/ `library`
+    （从菜品库里挑的）。它不影响任何逻辑，只是留着以后排查用 ——
+    「这道菜是模型编的还是库里抄的」在出问题时是第一个要问的。
+    """
     row = Recipe(
         user_id=user_id,
         name=recipe.name,
@@ -124,7 +136,7 @@ def _persist(db: Session, user_id: int, recipe: RecipeOut) -> Recipe:
         steps=recipe.steps,
         nutrition=recipe.nutrition.model_dump(),
         tags=recipe.tags,
-        source="ai",
+        source=source,
         image_url=recipe.image_url,
     )
     # ⚠️ unit 必须过 clean_unit：模型偶尔在单位里塞注释
@@ -166,7 +178,9 @@ def _sync_row(row: Recipe, recipe: RecipeOut) -> None:
     ]
 
 
-def _persist_or_update(db: Session, user_id: int, recipe: RecipeOut) -> Recipe:
+def _persist_or_update(
+    db: Session, user_id: int, recipe: RecipeOut, *, source: str = "ai"
+) -> Recipe:
     """按**菜名**落库：已有同名菜谱就更新，没有才新建。
 
     为什么必须查重：用户每点一次「生成新菜谱」都会打一次 /generate，
@@ -304,74 +318,112 @@ def _row_to_out(row: Recipe) -> RecipeOut:
 
 
 @router.post("/generate", response_model=RecipeGenerateResponse,
-             summary="根据库存 + 用户画像生成菜谱（核心接口）")
+             summary="按冰箱里的食材，从菜品库挑出能做的菜（不调 AI）")
 def generate(payload: RecipeGenerateRequest, user: CurrentUser, db: DbSession):
-    # ⚠️ 配额检查必须在最前面 —— 这个接口每调一次就是一次真实的百炼计费。
-    #
-    # 一次调用生成 count 道菜，但**只扣 1 次配额**：
-    # 花的是「一次 AI 调用」的钱，按次数扣才和账单对得上。
-    guard_ai_quota(db, user.id)
+    """**关键词匹配，不调 AI。**
 
+    ## 为什么不用 AI 了（Ethan 的要求）
+
+    > 「生成菜谱我觉得不需要调用 ai，做一个类似于关键词提取器的内容，
+    >   因为数据库里有的菜品都会写需要什么食材，那么既然如此，
+    >   当用户冰箱里有的时候，生成的菜就可以直接是包含这个食材的」
+
+    完全正确 —— 菜品库里每道菜都标了必需食材，这件事**查表就能算**，
+    没有任何需要「理解」的东西。用 AI 的代价是：
+    约 20 秒、每次花钱、同样的冰箱给的菜还不一样（温度 > 0）。
+
+    改成查库之后：**毫秒级、免费、结果稳定可复现**。
+    AI 现在只用在**拍照识别**上（那才是真正需要视觉理解的地方）。
+
+    ## 和 `/recommend` 的区别
+
+    | | `/recommend` | `/generate`（本接口） |
+    |---|---|---|
+    | 目的 | **浏览**菜品库能做什么 | **挑几道加进我的菜谱** |
+    | 只看食材齐全的 | 否（缺 1~3 样也列出来） | **是** |
+    | 落库 | 不落 | `save=true` 时落成用户自己的菜谱 |
+
+    ## 「落库」落的是什么
+
+    从菜品库里挑中的菜，会按菜名 upsert 成**用户自己的一份**
+    （`_persist_or_update` 只认 `editable` 范围，不会去改内置那条）。
+    这样用户能在「全部」里看到它们、能删、能做菜扣库存，
+    而菜品库那份原样不动、所有用户共用。
+    """
     inventory, expiring, pref, health = _load_context(db, user.id)
 
-    # 把「用户已经有的菜名」带进提示词，让模型避开重复。
+    # `save=true` 就是要写库，先判权限 —— **不管最后挑没挑到菜**。
     #
-    # 为什么必须做：模型每次都会把最适合这份库存的那几道再推荐一遍，
-    # 而落库是按菜名 upsert 的 —— 重复的名字只覆盖旧行、不新增。
-    # 实测同一个冰箱连点三次「生成新菜谱」，前两道菜一模一样
-    #（番茄炒蛋 + 青椒鸡胸肉），列表卡在 3 道不动，
-    # 用户感受就是「能生成的菜非常有限」。
-    #
-    # ⚠️ 范围要**同时**包含「系统内置」和「自己最近生成的」，两段分开取：
-    #
-    #   - 内置那 192 道必须全带上。用户点开就能看到它们，
-    #     如果 AI 又编一道「清炒西兰花」，列表里会出现两道同名菜 ——
-    #     一道是内置标准做法、一道是 AI 现编的，很难分辨。
-    #   - 自己最近 30 道。菜谱攒多了以后把上百个名字全塞进提示词会拖慢生成，
-    #     而「别重复最近这些」已经足够解决问题。
-    #
-    # 不能简单地「取最近 30 个 readable」：那样内置菜谱一多，
-    # 用户自己的菜名就会被挤出前 30，反而失去去重作用。
-    builtin_names = [
-        name
-        for (name,) in db.query(Recipe.name).filter(Recipe.user_id.is_(None)).all()
-    ]
-    own_names = [
-        name
-        for (name,) in (
-            db.query(Recipe.name)
-            .filter(editable_recipe_clause(db, user.id))
-            .order_by(Recipe.created_at.desc())
-            .limit(30)
-            .all()
-        )
-    ]
-    exclude = own_names + builtin_names
-
-    recipes, model_name = generate_recipes(
-        inventory=inventory,
-        pref=pref,
-        health=health,
-        count=payload.count,
-        max_time=payload.max_time_minutes,
-        expiring=expiring if payload.prioritize_expiring else [],
-        extra_notes=payload.extra_notes,
-        exclude=exclude,
-    )
-
+    # 放在「有没有挑到菜」之后的话，只读成员在冰箱空/没匹配到时会拿到 200，
+    # 于是「他到底能不能用这个功能」取决于冰箱里有什么 ——
+    # 权限判断不该依赖数据状态。
     if payload.save:
-        # 落库 = 写共享数据，只读成员不行。
-        # 放在 if 里面而不是函数开头：save=False 的纯预览不该被拦。
         _guard_write(db, user.id)
+
+    if not inventory:
+        return RecipeGenerateResponse(
+            recipes=[],
+            model=LIBRARY_MODEL,
+            used_ingredients=[],
+            expiring_used=[],
+        )
+
+    # 用户已经有的菜名 —— 不再重复挑（不然连点几次列表一点都不变）
+    own_names = {
+        name
+        for (name,) in db.query(Recipe.name)
+        .filter(editable_recipe_clause(db, user.id))
+        .all()
+    }
+
+    # 菜品库里按食材匹配。**只看 ready**（必需食材齐全）——
+    # 这个接口给的是「你现在就能做的菜」，缺东西的不该出现在这里。
+    dishes = recommend_dishes(inventory, limit=80)
+    picked_names = [
+        d["name"] for d in dishes
+        if d["ready"] and d["name"] not in own_names
+    ]
+
+    # 时间上限：用户画像里有个「做饭最多花多久」，超了就跳过
+    max_time = payload.max_time_minutes or (pref.cook_time_max if pref else None)
+
+    if not picked_names:
+        return RecipeGenerateResponse(
+            recipes=[],
+            model=LIBRARY_MODEL,
+            used_ingredients=[i.food_name for i in inventory],
+            expiring_used=[],
+        )
+
+    # 一次把挑中的菜从库里读出来（不要逐个查 —— 那是 N 次数据库往返）
+    rows = (
+        db.query(Recipe)
+        .filter(Recipe.user_id.is_(None), Recipe.name.in_(picked_names))
+        .all()
+    )
+    by_name = {r.name: r for r in rows}
+
+    recipes: list[RecipeOut] = []
+    for name in picked_names:
+        row = by_name.get(name)
+        if row is None:
+            continue      # 种子数据缺了这一道，跳过（不该发生）
+        if max_time and row.time_minutes and row.time_minutes > max_time:
+            continue
+        recipes.append(_with_availability(_row_to_out(row), inventory))
+        if len(recipes) >= payload.count:
+            break
+
+    if payload.save and recipes:
         for r in recipes:
             # 走 upsert：同名菜谱只保留一行，反复生成不会把列表撑爆
-            row = _persist_or_update(db, user.id, r)
+            row = _persist_or_update(db, user.id, r, source="library")
             r.id = row.id
         db.commit()
 
     return RecipeGenerateResponse(
         recipes=recipes,
-        model=model_name,
+        model=LIBRARY_MODEL,
         used_ingredients=[i.food_name for i in inventory],
         expiring_used=sorted({n for r in recipes for n in r.uses_expiring}),
     )

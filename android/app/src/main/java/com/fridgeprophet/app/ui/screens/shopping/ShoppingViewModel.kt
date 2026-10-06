@@ -10,6 +10,7 @@ import com.fridgeprophet.app.data.remote.dto.ShoppingListOut
 import com.fridgeprophet.app.data.repository.RecipeRepository
 import com.fridgeprophet.app.data.repository.ShoppingRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -52,9 +53,14 @@ class ShoppingViewModel @Inject constructor(
         if (!silent) _state.update { it.copy(loading = true, error = null) }
 
         viewModelScope.launch {
-            val listsResult = shoppingRepository.list()
+            // ⚠️ 两个请求**并发**发，不要串行。
+            // 生产库在 Supabase（孟买），单次往返 169ms ——
+            // 串行就白多花一次往返。
+            val listsDeferred = async { shoppingRepository.list() }
             // 菜谱列表只为「新建清单」服务，拉失败不影响主流程
-            val recipesResult = recipeRepository.list(limit = 30)
+            val recipesDeferred = async { recipeRepository.list(limit = 30) }
+            val listsResult = listsDeferred.await()
+            val recipesResult = recipesDeferred.await()
 
             val failure = listsResult as? ApiResult.Failure
 
@@ -127,29 +133,89 @@ class ShoppingViewModel @Inject constructor(
     }
 
     /** 买完了：把清单里的东西写回冰箱库存，同时更新保质期 */
+    /**
+     * 买完了 → 把勾选的条目写回冰箱库存。
+     *
+     * ## 为什么先改本地、再发请求（乐观更新）
+     *
+     * 写回冰箱是**逐条**改库存（每条还要跨家庭查同名合并），
+     * 生产库在 Supabase（孟买），**一次往返 169ms** —— 10 项就是一两秒。
+     *
+     * 原来的写法是「等服务器回来 → 再 load() 一次 → 卡片才变暗」，
+     * 用户看到的是：点了按钮、转圈、一两秒后界面才动。
+     * Ethan 反馈的就是这个：「完成采购之后采购项变暗响应太慢」。
+     *
+     * 现在：
+     *   ① 立刻把勾选的条目标成「已入库」、整单标成完成（变暗）
+     *   ② 再发请求
+     *   ③ 成功 → 用**服务端返回的那份**替换本地（它是权威数据，
+     *      而且省掉一次多余的 `load()`）
+     *   ④ 失败 → 报错 + 重新加载（回滚）
+     *
+     * ⚠️ 判定「整单完成」的规则要和后端一致：
+     * 后端是 `if all(i.checked for i in row.items): row.status = "done"`。
+     * 规则改了这里也要改，否则会出现「界面变暗了但服务器还是 pending」
+     *（下次刷新又弹回来）。
+     */
     fun applyToList(list: ShoppingListOut, onlyChecked: Boolean = true) {
-        _state.update { it.copy(busy = true, error = null, message = null) }
+        val targets = list.items.filter { (it.checked || !onlyChecked) && !it.appliedToInventory }
+        if (targets.isEmpty()) {
+            _state.update {
+                it.copy(message = "没有可入库的条目。先勾选你买到的东西，再点一次")
+            }
+            return
+        }
+
+        val targetIds = targets.map { it.id }.toSet()
+        val willAllBeChecked = list.items.all { it.checked || it.id in targetIds }
+
+        _state.update { st ->
+            st.copy(
+                busy = true,
+                error = null,
+                message = null,
+                lists = st.lists.map { l ->
+                    if (l.id != list.id) {
+                        l
+                    } else {
+                        l.copy(
+                            status = if (willAllBeChecked) "done" else l.status,
+                            items = l.items.map { item ->
+                                if (item.id in targetIds) {
+                                    item.copy(appliedToInventory = true, checked = true)
+                                } else {
+                                    item
+                                }
+                            },
+                        )
+                    }
+                },
+            )
+        }
 
         viewModelScope.launch {
             when (val result = shoppingRepository.applyToList(list.id, onlyChecked)) {
                 is ApiResult.Success -> {
-                    val applied = result.data.items.count { it.appliedToInventory }
-                    _state.update {
-                        it.copy(
+                    val updated = result.data
+                    val applied = updated.items.count { it.appliedToInventory }
+                    _state.update { st ->
+                        st.copy(
                             busy = false,
-                            message = if (applied == 0) {
-                                "没有可入库的条目。先勾选你买到的东西，再点一次"
-                            } else {
-                                "已把 $applied 样食材写回冰箱，保质期按默认天数估算"
-                            },
+                            message = "已把 $applied 样食材写回冰箱，保质期按默认天数估算",
+                            // 服务端返回的就是最新状态，直接替换本地那份
+                            lists = st.lists.map { if (it.id == updated.id) updated else it },
                         )
                     }
+                    // 冰箱页要跟着变。**不要** notify(SHOPPING) ——
+                    // 本 ViewModel 就订阅了那个 topic，那等于自己触发一次
+                    // 全量 reload，白多一次往返。
                     refreshBus.notify(DataRefreshBus.Topic.INVENTORY)
-                    refreshBus.notify(DataRefreshBus.Topic.SHOPPING)
+                }
+                is ApiResult.Failure -> {
+                    _state.update { it.copy(busy = false, error = result.message) }
+                    // 乐观更新要回滚：拉一次真实状态覆盖掉本地那份
                     load(silent = true)
                 }
-                is ApiResult.Failure ->
-                    _state.update { it.copy(busy = false, error = result.message) }
             }
         }
     }

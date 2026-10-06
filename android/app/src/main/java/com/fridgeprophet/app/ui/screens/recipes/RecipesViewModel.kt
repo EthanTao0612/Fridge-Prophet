@@ -101,13 +101,18 @@ class RecipesViewModel @Inject constructor(
         viewModelScope.launch {
             when (val result = repository.generate(count = 3)) {
                 is ApiResult.Success -> {
+                    val got = result.data.recipes.size
                     _state.update {
                         it.copy(
                             generating = false,
-                            info = if (result.data.recipes.isEmpty()) {
-                                "没有生成出菜谱。冰箱为空时无法推荐，先去扫描一次。"
+                            info = if (got == 0) {
+                                // 空结果有几种可能，但用户只关心「怎么办」
+                                "冰箱里现有的食材还做不了菜品库里的菜。先去冰箱页加几样，或者扫描一次。"
                             } else {
-                                "已生成 ${result.data.recipes.size} 道菜（模型：${result.data.model}）"
+                                // ⚠️ 这里**不再写「模型：xxx」**。
+                                // 后端现在是从菜品库按食材挑（不调 AI），
+                                // 说「模型」会让人以为又去调 AI 了。
+                                "已从菜品库挑了 $got 道你现在能做的菜"
                             },
                         )
                     }
