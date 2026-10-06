@@ -707,6 +707,49 @@ def main() -> int:
         r = client.post("/api/v1/recipes/999999/cook", headers=headers, json={})
         check("给不存在的菜谱扣库存 → 404", r.status_code == 404, r.text[:200])
 
+        print("\n=== 6e. 内置菜品库推荐（192 道家常菜）===")
+        # 这个接口不花钱、毫秒级 —— 和 AI 生成互补：
+        # 用户想「现在能做什么」用它，想要「按口味来点新花样」用 AI 生成。
+        r = client.get("/api/v1/recipes/recommend?limit=100", headers=headers)
+        check("推荐接口可用", r.status_code == 200, r.text[:200])
+        rec = r.json()
+        check("返回了推荐结果", rec.get("total", 0) > 0, str(rec)[:200])
+
+        # 前面几节灌过鸡蛋/西红柿/青椒/豆腐等，应该能做出一些菜
+        check("有「食材齐全」的菜", rec.get("ready_count", 0) > 0,
+              f"ready_count={rec.get('ready_count')}")
+
+        dishes = rec.get("dishes", [])
+        check("每道菜都有配图（192 张菜品图已导入）",
+              all(d.get("image_url") for d in dishes),
+              str([d["name"] for d in dishes if not d.get("image_url")])[:200])
+        check("每道菜都标了分类",
+              all(d.get("category") for d in dishes), str(dishes[:1])[:200])
+
+        # 排序：能做的在前，缺得少的在前
+        missing_counts = [len(d.get("missing", [])) for d in dishes]
+        check("按「缺几样」升序排（能做的在最前）",
+              missing_counts == sorted(missing_counts), str(missing_counts[:10]))
+
+        # 「食材齐全」的菜 missing 必须是空 —— 不能自相矛盾
+        check("ready 的菜 missing 为空",
+              all(not d["missing"] for d in dishes if d["ready"]),
+              str([d for d in dishes if d["ready"] and d["missing"]])[:200])
+        # 反过来：missing 非空的不能标 ready
+        check("missing 非空的菜不标 ready",
+              all(not d["ready"] for d in dishes if d["missing"]),
+              str([d for d in dishes if d["missing"] and d["ready"]])[:200])
+
+        # 缺太多（>3 样）的不该推 —— 推了也没意义
+        check("缺超过 3 样的菜不推荐", all(len(d["missing"]) <= 3 for d in dishes),
+              str([d for d in dishes if len(d["missing"]) > 3])[:200])
+
+        # 分类过滤
+        r = client.get("/api/v1/recipes/recommend?category=汤羹", headers=headers)
+        if r.status_code == 200:
+            cats = {d["category"] for d in r.json()["dishes"]}
+            check("按分类过滤生效", cats <= {"汤羹"}, str(cats))
+
         print("\n=== 7. 菜谱详情与行为反馈 ===")
         r = client.get("/api/v1/recipes", headers=headers)
         check("菜谱列表", r.status_code == 200 and len(r.json()) == 3, r.text[:300])

@@ -27,6 +27,7 @@ from app.services.recipe_service import (
     build_cook_plan,
     generate_recipes,
     recompute_availability,
+    recommend_dishes,
 )
 
 router = APIRouter(prefix="/recipes", tags=["AI 菜谱"])
@@ -311,6 +312,43 @@ def list_recipes(
 
     inventory = _load_inventory(db, user.id)
     return [_with_availability(_row_to_out(r), inventory) for r in rows]
+
+
+# ⚠️ 这个路由**必须**放在 `/{recipe_id}` 之前。
+# 否则 FastAPI 会先把 "recommend" 当成 recipe_id 去匹配 `/{recipe_id}`，
+# 结果是 422（int 解析失败）而不是走到这里。
+@router.get("/recommend", summary="按冰箱里现有的食材推荐能做的菜")
+def recommend(
+    user: CurrentUser,
+    db: DbSession,
+    limit: int = Query(default=30, ge=1, le=100),
+    category: str | None = Query(default=None, description="只看某个分类，如「家常热菜」"),
+) -> dict:
+    """从 192 道内置家常菜里，挑出用户现在能做 / 差一点就能做的。
+
+    ## 和 `/generate` 的区别
+
+    - `/generate` 是**AI 现编**：慢（约 20 秒）、花钱、但能按画像定制，
+      也能编出库里没有的菜
+    - `/recommend` 是**查库**：快（毫秒级）、免费、菜品有专属配图，
+      但只能推荐库里那 192 道
+
+    两者互补：用户想「看看现在能做什么」用这个（即时反馈），
+    想要「按我的口味来点新花样」用 AI 生成。
+
+    ## 为什么不用 AI 算「能不能做」
+
+    AI 判断「冰箱里有没有五花肉」是不可靠的（它会凭常识猜），
+    而且每次都要花钱。库里每道菜的必需食材是**人工标注**的，
+    用集合运算判断又准又快。
+    """
+    inventory = _load_inventory(db, user.id)
+    dishes = recommend_dishes(inventory, limit=limit, category=category)
+    return {
+        "total": len(dishes),
+        "ready_count": sum(1 for d in dishes if d["ready"]),
+        "dishes": dishes,
+    }
 
 
 @router.get("/{recipe_id}", response_model=RecipeOut, summary="菜谱详情")

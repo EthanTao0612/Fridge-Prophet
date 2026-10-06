@@ -505,3 +505,106 @@ def build_cook_plan(
         items=items,
         missing=missing,
     )
+
+
+# ============================================================
+#  内置菜品库推荐
+# ============================================================
+
+def _stock_keys(inventory: list[FoodInventory]) -> set[str]:
+    """把库存映射成**图片 key 集合**。
+
+    ## 为什么要有这一层
+
+    `_index_stock()` 是按**中文食材名**索引的（AI 生成的菜谱里存的是名字）。
+    而内置菜品库的「必需食材」用的是**图片 key**（`tomato` 而不是「番茄」），
+    两边对不上。
+
+    这里在 `_index_stock()` 的基础上转一层，**保证「冰箱里有什么」仍然只有一处定义** ——
+    直接自己遍历一遍 inventory 判断，就又变成两处了（铁律 6 踩过的坑）。
+
+    认不出 key 的食材直接跳过：它不会匹配上任何菜品，留着也没用。
+    """
+    from app.services.ingredient_image_service import resolve_ingredient_key
+
+    keys: set[str] = set()
+    for name in _index_stock(inventory):
+        key = resolve_ingredient_key(name)
+        if key:
+            keys.add(key)
+    return keys
+
+
+def recommend_dishes(
+    inventory: list[FoodInventory],
+    limit: int = 30,
+    category: str | None = None,
+) -> list[dict]:
+    """按冰箱里现有的食材，从内置菜品库里挑出能做的菜。
+
+    返回的每一项：
+
+        {
+          "name": "西红柿炒鸡蛋",
+          "category": "家常热菜",
+          "image_url": "/static/recipes/scrambled-eggs-with-tomatoes.jpg",
+          "ready": True,               # 必需食材齐了
+          "matched": ["番茄", "鸡蛋"],  # 冰箱里已有（**中文名**，给用户看）
+          "missing": [],                # 还缺什么
+        }
+
+    ## 排序规则
+
+    1. **能做的在前**（缺 0 样）
+    2. 缺得少的在前
+    3. 同档按菜名稳定排序（否则每次请求顺序会变，列表看起来在跳）
+
+    ## 为什么用「必需食材」而不是「全部食材」
+
+    `dish_library.BY_REQUIRED` 只算必需食材。如果连可选食材（蒜、葱、酱油）
+    也算进去，用户有蒜就会看到几十道「差一点就能做」的菜，全是噪音。
+    """
+    from app.services.dish_library import DISH_CATEGORIES, DISH_INGREDIENTS, DISH_NAMES
+    # ⚠️ 这里必须用 **food_image_service** 的 _exists / _url ——
+    # 它们查的是 `static/recipes/`。
+    # ingredient_image_service 里**也有**一对同名的 _exists / _url，
+    # 但查的是 `static/ingredients/`。拿错的话每道菜都会显示「没有配图」，
+    # 而且不报错 —— 只是图片静默消失了。
+    from app.services.food_image_service import _exists as image_exists
+    from app.services.food_image_service import _url as image_url
+    from app.services.ingredient_lexicon import INGREDIENT_ALIASES
+
+    stock = _stock_keys(inventory)
+
+    # key -> 中文名（显示用）。同一个 key 可能对应多个中文名，取最短的那个
+    #（「番茄」比「西红柿」短，界面上更好看）
+    key_to_name: dict[str, str] = {}
+    for name, key in INGREDIENT_ALIASES.items():
+        cur = key_to_name.get(key)
+        if cur is None or len(name) < len(cur):
+            key_to_name[key] = name
+
+    out: list[dict] = []
+    for dish in DISH_NAMES:
+        if category and DISH_CATEGORIES.get(dish) != category:
+            continue
+
+        required, _optional = DISH_INGREDIENTS[dish]
+        missing = [k for k in required if k not in stock]
+        # 一道菜最多接受缺 3 样 —— 缺太多的推了也没意义，用户不会为一道菜买五样东西
+        if len(missing) > 3:
+            continue
+
+        img_key = DISH_NAMES[dish]
+        out.append({
+            "name": dish,
+            "category": DISH_CATEGORIES.get(dish, ""),
+            "image_url": image_url(img_key) if image_exists(img_key) else None,
+            "ready": not missing,
+            "matched": [key_to_name.get(k, k) for k in required if k in stock],
+            "missing": [key_to_name.get(k, k) for k in missing],
+        })
+
+    # 能做的在前 → 缺得少的在前 → 菜名稳定排序
+    out.sort(key=lambda d: (len(d["missing"]), d["name"]))
+    return out[:limit]
