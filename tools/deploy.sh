@@ -674,9 +674,29 @@ NGINXEOF
 ln -sf "/etc/nginx/sites-available/${NGINX_SITE}" "/etc/nginx/sites-enabled/${NGINX_SITE}"
 rm -f /etc/nginx/sites-enabled/default
 
+# ⚠️⚠️ 让 Nginx 能读到 static/ 里的图 —— 不加这一条，App 里**一张图都不显示**。
+#
+# 2026-10-07 首次部署踩到：`adduser` 建的 /home/fridge 权限是 `drwxr-x---`，
+# 而 Nginx 的 worker 以 **www-data** 身份跑 —— **穿不过这个目录**，
+# 于是 /static/ 下所有文件一律 **403 Forbidden**。
+#
+# 最坑的是：`/health` 完全正常、接口全通，只有图片挂 ——
+# 排查时很容易怀疑到图片服务或路径上，很难想到是**目录权限**。
+# 证据在 Nginx 错误日志里：
+#   open() ".../static/ingredients/tomato.jpg" failed (13: Permission denied)
+#
+# 组的权限本来就是 r-x（`drwxr-x---`），所以只要把 www-data 加进 fridge 组。
+# 比 `chmod o+x` 干净 —— 不用放开「其他用户可穿越」，
+# 而且 .env 是 600，加了组照样读不到。
+usermod -aG "${APP_USER}" www-data
+
+# ⚠️ 顺序：**先测配置，再重启**。
+# 反过来的话，配置有语法错误会把 Nginx 先弄挂，站点直接不可用。
 nginx -t >/dev/null 2>&1 || { nginx -t; die "Nginx 配置有语法错误，见上面输出"; }
-systemctl reload nginx
-ok "Nginx 已配置并重载（server_name=${DOMAIN}）"
+# restart 而不是 reload —— www-data 的**附加组**要重新拉进程才生效
+systemctl restart nginx
+ok "Nginx 已配置并重启（server_name=${DOMAIN}）"
+ok "已把 www-data 加进 ${APP_USER} 组（否则 /static/ 里的图会 403）"
 
 # 本机自检：不经过域名，直接打 Nginx
 #
@@ -794,10 +814,26 @@ else
     warn "  sudo nginx -t"
 fi
 
+# ⚠️ 静态图单独查 —— 它**不走 Python**（Nginx 直接发文件），
+# 所以「接口全通」不代表图能显示。
+#
+# 2026-10-07 首次部署就是这个挂了：/home/fridge 是 drwxr-x---，
+# Nginx(www-data) 穿不过去 → /static/ 全 403 → **App 里一张图都不显示**，
+# 而 /health 和所有接口都正常，很容易查错方向。
+STATIC_CODE=$(curl -sk -o /dev/null -w "%{http_code}" --max-time 10 \
+    -H "Host: ${DOMAIN}" "https://127.0.0.1/static/ingredients/tomato.jpg" || echo "000")
+if [ "$STATIC_CODE" = "200" ]; then
+    ok "静态图 /static/ → 200（Nginx 读得到文件）"
+else
+    warn "静态图 /static/ → ${STATIC_CODE} —— **App 里会一张图都不显示**"
+    warn "最常见的原因：Nginx(www-data) 读不到 ${APP_DIR}/backend/static/"
+    warn "  sudo usermod -aG ${APP_USER} www-data && sudo systemctl restart nginx"
+    warn "  （看 Nginx 日志确认：sudo tail -5 /var/log/nginx/error.log）"
+fi
+
 # ② 再打公网。
 #
-# ⚠️ 这一步失败**基本只有一个原因：防火墙没放行**。
-# 之前这里报「证书可能还没签成功」，把排查方向带偏了 ——
+# ⚠️ 这一步失败**基本只有一个原因：防火墙没放行**。# 之前这里报「证书可能还没签成功」，把排查方向带偏了 ——
 # 证书早就签好了，是 443 没开。
 PUBLIC_HTTPS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 "https://${DOMAIN}/health" || echo "000")
 if [ "$PUBLIC_HTTPS" = "200" ]; then
