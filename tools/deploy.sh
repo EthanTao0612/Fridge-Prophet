@@ -389,6 +389,21 @@ else
     read -r -p "    Supabase 项目地址 SUPABASE_URL: " IN_SUPA_URL || IN_SUPA_URL=""
     read -r -p "    Supabase service key: " IN_SUPA_KEY || IN_SUPA_KEY=""
 
+    # ⚠️ SMTP 一定要问 —— 2026-10-07 首次部署漏了这三项，
+    # 结果服务器上「邮箱验证码: ⚠️ 未配置 SMTP」，
+    # **注册流程直接不可用**（验证码只打到服务器日志里，
+    # 用户根本收不到，任何人都能用编造的邮箱注册）。
+    # 这个坑只在真实用户注册时才会暴露，演示当天才发现就晚了。
+    echo
+    echo "    ── 邮箱验证码（注册要用）──"
+    echo "    不填的话：验证码只打到服务器日志里，**用户注册不了**。"
+    echo
+    read -r -p "    SMTP 服务器 SMTP_HOST（如 smtp.163.com）: " IN_SMTP_HOST || IN_SMTP_HOST=""
+    read -r -p "    SMTP 端口 SMTP_PORT（163 用 465）: " IN_SMTP_PORT || IN_SMTP_PORT=""
+    read -r -p "    SMTP 账号 SMTP_USER: " IN_SMTP_USER || IN_SMTP_USER=""
+    read -r -p "    SMTP 密码/授权码 SMTP_PASSWORD: " IN_SMTP_PASS || IN_SMTP_PASS=""
+    [ -n "$IN_SMTP_HOST" ] && [ -z "$IN_SMTP_PORT" ] && IN_SMTP_PORT=465
+
     # 提醒两个最容易写错的地方（逻辑在 normalize_db_url 里，有自测）
     if [ -n "$IN_DB" ]; then
         FIXED_DB=$(normalize_db_url "$IN_DB")
@@ -429,16 +444,28 @@ SUPABASE_SERVICE_KEY=${IN_SUPA_KEY}
 DAILY_AI_LIMIT_PER_USER=30
 DAILY_AI_LIMIT_GLOBAL=500
 
-# 邮箱验证码（不填则验证码只打到日志里，注册流程仍可走通）
-SMTP_HOST=
-SMTP_PORT=465
-SMTP_USER=
-SMTP_PASSWORD=
+# 邮箱验证码（注册要用）。不填则验证码只打到日志里，**用户注册不了**。
+SMTP_HOST=${IN_SMTP_HOST}
+SMTP_PORT=${IN_SMTP_PORT}
+SMTP_USER=${IN_SMTP_USER}
+SMTP_PASSWORD=${IN_SMTP_PASS}
 ENVEOF
 
     chown "${APP_USER}:${APP_USER}" "$ENV_FILE"
     chmod 600 "$ENV_FILE"     # 里面有密钥，只给属主读
     ok ".env 已生成（权限 600，只有 ${APP_USER} 能读）"
+fi
+
+# ⚠️ 部署完立刻检查 SMTP —— 这是**唯一一个「配错了也照样启动、
+# 只有真实用户注册时才会暴露」**的配置项。
+# 不检查的话，演示当天有人来注册才发现收不到验证码。
+if grep -q '^SMTP_HOST=$' "$ENV_FILE" 2>/dev/null; then
+    warn "SMTP_HOST 是空的 —— **注册流程不可用**（验证码只打到服务器日志里）"
+    warn "补上之后重启服务："
+    warn "  sudo nano ${ENV_FILE}    # 填 SMTP_HOST/PORT/USER/PASSWORD"
+    warn "  sudo systemctl restart ${SERVICE_NAME}"
+else
+    ok "SMTP 已配置（注册验证码能发出去）"
 fi
 
 # ============================================================
@@ -652,8 +679,13 @@ systemctl reload nginx
 ok "Nginx 已配置并重载（server_name=${DOMAIN}）"
 
 # 本机自检：不经过域名，直接打 Nginx
-if curl -fsS --max-time 10 "http://127.0.0.1/health" >/dev/null 2>&1; then
-    ok "本机 /health 通了"
+#
+# ⚠️ 必须带 `Host: ${DOMAIN}` 头。
+# 不带的话 curl 发的是 `Host: 127.0.0.1`，而 certbot 之后会把 80 端口的
+# server 块改成「只对 ${DOMAIN} 跳转，其他 Host 一律 404」——
+# 于是这一步会报一个**看起来像应用挂了、其实是假警报**的 404。
+if curl -fsS --max-time 10 -H "Host: ${DOMAIN}" "http://127.0.0.1/health" >/dev/null 2>&1; then
+    ok "本机 /health 通了（Host: ${DOMAIN}）"
 else
     warn "本机 /health 没通，检查一下：journalctl -u ${SERVICE_NAME} -n 30"
 fi
@@ -747,22 +779,44 @@ fi
 
 echo
 echo "    ${C_BOLD}接口连通性${C_RESET}"
-LOCAL_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 http://127.0.0.1/health || echo "000")
-[ "$LOCAL_CODE" = "200" ] && ok "本机 http://127.0.0.1/health → 200" \
-                          || warn "本机 /health → ${LOCAL_CODE}"
 
+# ① 先打**本机 443**（带正确的 Host，绕过外部防火墙）。
+#
+# 这一步是「应用 + Nginx + 证书」三件事是否都好的**唯一可靠判据** ——
+# 它不走外网，所以防火墙开没开都不影响它。
+LOCAL_HTTPS=$(curl -sk -o /dev/null -w "%{http_code}" --max-time 10 \
+    -H "Host: ${DOMAIN}" https://127.0.0.1/health || echo "000")
+if [ "$LOCAL_HTTPS" = "200" ]; then
+    ok "本机 https://127.0.0.1/health（带 Host 头）→ 200，应用和证书都正常"
+else
+    warn "本机 443 → ${LOCAL_HTTPS}（不是 200）—— 问题在应用或 Nginx 本身："
+    warn "  sudo journalctl -u ${SERVICE_NAME} -n 30"
+    warn "  sudo nginx -t"
+fi
+
+# ② 再打公网。
+#
+# ⚠️ 这一步失败**基本只有一个原因：防火墙没放行**。
+# 之前这里报「证书可能还没签成功」，把排查方向带偏了 ——
+# 证书早就签好了，是 443 没开。
 PUBLIC_HTTPS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 "https://${DOMAIN}/health" || echo "000")
 if [ "$PUBLIC_HTTPS" = "200" ]; then
     ok "公网 https://${DOMAIN}/health → 200"
 else
     PUBLIC_HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 "http://${DOMAIN}/health" || echo "000")
-    if [ "$PUBLIC_HTTP" = "200" ] || [ "$PUBLIC_HTTP" = "301" ] || [ "$PUBLIC_HTTP" = "308" ]; then
-        warn "公网 HTTPS → ${PUBLIC_HTTPS}，但 HTTP → ${PUBLIC_HTTP}（证书可能还没签成功）"
+    if [ "$LOCAL_HTTPS" = "200" ]; then
+        # 本机通、公网不通 → 几乎一定是防火墙
+        warn "公网 https://${DOMAIN}/health → ${PUBLIC_HTTPS}（本机是通的）"
+        warn "所以问题在**外部网络到这台机器的路上**，去控制台放行端口："
+        warn "  腾讯云轻量应用服务器 → 选中实例 → 防火墙 → 添加规则"
+        warn "    443/TCP  ← 不加这条，App 正式包连不上"
+        warn "    80/TCP   ← 不加这条，certbot 续期会失败"
+        [ "$PUBLIC_HTTP" = "301" ] && warn "  （80 现在是通的，只差 443）"
     else
         warn "公网 https://${DOMAIN}/health → ${PUBLIC_HTTPS}"
-        warn "在**你自己的电脑**上试试能不能打开，如果也不行："
-        warn "  1. 腾讯云控制台的防火墙/安全组有没有放行 80 和 443"
-        warn "  2. 域名 A 记录是不是指向这台服务器"
+        warn "本机 443 也不通，先按上面的提示查应用；另外确认："
+        warn "  1. 控制台防火墙放行了 80 和 443"
+        warn "  2. 域名的 A 记录指向这台服务器"
     fi
 fi
 
