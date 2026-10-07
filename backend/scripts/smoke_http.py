@@ -295,15 +295,47 @@ def main() -> int:
     )
     if not check("照片上传并识别成功", status in (200, 201), f"HTTP {status} {scan}"):
         return 1
+    # ⚠️ 这里**不能断言「识别出了食材」**。
+    #
+    # 本脚本上传的是一张 32×32 的纯色 PNG（make_test_png），
+    # 真实模型看一眼就会说「没有识别到食材」—— 这是**正确行为**，
+    # 不是 bug。之前断言「识别出了食材」只在 MOCK 模式下才成立
+    #（MOCK 会返回假食材），接了真模型之后必然失败。
+    #
+    # 所以这里只断言**扫描接口本身工作正常**：
+    # 返回 scan_id、标记为待确认、上传的照片能取回来。
+    # 后面下游流程（菜谱 / 采购）用一份固定的候选食材继续测。
+    scan_id = scan.get("scan_id") if isinstance(scan, dict) else None
+    check("扫描接口返回了 scan_id", bool(scan_id), str(scan)[:200])
+    check("识别结果标记为待确认", scan.get("needs_review") is True, str(scan)[:200])
+    check("模型名有返回（确认真调了 AI）", bool(scan.get("model")), str(scan)[:200])
+
+    # 上传的照片必须真的能取回来 —— 这条顺带验证了图片存储
+    #（Supabase Storage 或本地磁盘 + 反向代理）配置正确。
+    photo_url = scan.get("image_url") if isinstance(scan, dict) else None
+    if photo_url:
+        try:
+            req = urllib.request.Request(photo_url, method="HEAD")
+            with urllib.request.urlopen(req, timeout=20) as r:
+                check("上传的照片能公网取回", r.status == 200, f"HTTP {r.status}")
+        except Exception as ex:
+            check("上传的照片能公网取回", False, f"{type(ex).__name__}: {ex}")
+
     foods = scan.get("foods") if isinstance(scan, dict) else None
-    check("识别出了食材", bool(foods), str(scan))
-    if not foods:
-        return 1
-    check("识别结果标记为待确认", scan.get("needs_review") is True, str(scan))
-    print(f"         识别到 {len(foods)} 种：")
-    for f in foods[:6]:
-        print(f"           - {f.get('name')} {f.get('quantity')}{f.get('unit')}"
-              f"  置信度 {f.get('confidence')}")
+    if foods:
+        print(f"         真实识别到 {len(foods)} 种食材：")
+        for f in foods[:6]:
+            print(f"           - {f.get('name')} {f.get('quantity')}{f.get('unit')}"
+                  f"  置信度 {f.get('confidence')}")
+    else:
+        # 纯色假图 + 真模型 = 识别不到东西，走这条兜底。
+        # 用一份常见的候选食材，让后面的菜谱 / 采购流程也能测到。
+        print("         （纯色测试图，真模型识别不到食材 —— 符合预期，用固定候选继续）")
+        foods = [
+            {"name": "鸡蛋", "quantity": 6, "unit": "个", "confidence": 1.0},
+            {"name": "西红柿", "quantity": 3, "unit": "个", "confidence": 1.0},
+            {"name": "牛奶", "quantity": 1, "unit": "盒", "confidence": 1.0},
+        ]
 
     # ---------- 4. 确认入库 ----------
     section("4", "用户确认识别结果（关键：AI 结果不直接入库）")
