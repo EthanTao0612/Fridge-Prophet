@@ -130,7 +130,24 @@ normalize_db_url() {
 pick_workers() {
     local cpu="${1:-2}"
     [ "$cpu" -lt 1 ] 2>/dev/null && cpu=1
-    if [ "$cpu" -gt 4 ]; then echo 4; else echo "$cpu"; fi
+    # ⚠️ **封顶 2，不是 4。**
+    #
+    # 2026-10-07 实测：Supabase 的连接池
+    #（`pooler.supabase.com:5432`）**只允许 10 条并发连接**，
+    # 第 11 条直接报 `FATAL: (EMAXCONNSESSION) max clients reached`。
+    #
+    # 每个 worker 占 `pool_size + max_overflow = 2 + 2 = 4` 条
+    #（见 backend/app/db/session.py），所以：
+    #     1 个 worker → 4 条
+    #     2 个 worker → 8 条  ← 封顶，留 2 条余量
+    #     4 个 worker → 16 条 ← 直接爆
+    #
+    # 而且这个额度**整个项目共享** —— 本机开发的后端也占着，
+    # 所以部署前记得把本机的后端停掉。
+    #
+    # 想多开 worker 的话，必须同时把 session.py 里的 pool_size 调小，
+    # 让 `(pool_size + max_overflow) × worker ≤ 10` 成立。
+    if [ "$cpu" -gt 2 ]; then echo 2; else echo "$cpu"; fi
 }
 
 # 自测：`bash deploy.sh --selftest`
@@ -170,9 +187,18 @@ if [ "${1:-}" = "--selftest" ]; then
     echo "=== pick_workers ==="
     t "1 核 → 1"   "$(pick_workers 1)"  "1"
     t "2 核 → 2"   "$(pick_workers 2)"  "2"
-    t "4 核 → 4"   "$(pick_workers 4)"  "4"
-    t "8 核 → 4（封顶）" "$(pick_workers 8)" "4"
+    t "4 核 → 2（封顶，受数据库连接数限制）" "$(pick_workers 4)" "2"
+    t "8 核 → 2（封顶）" "$(pick_workers 8)" "2"
     t "异常值 0 → 1"     "$(pick_workers 0)" "1"
+
+    # ⚠️ 连接预算必须 ≤ 10（Supabase 连接池的硬上限，2026-10-07 实测）
+    echo "=== 连接预算（pool_size 2 + overflow 2 = 4/worker）==="
+    for _cpu in 1 2 4 8 16; do
+        _w=$(pick_workers "$_cpu")
+        _budget=$((_w * 4))
+        t "${_cpu} 核 → ${_w} worker × 4 = ${_budget} 条连接（≤10）" \
+          "$([ "$_budget" -le 10 ] && echo ok || echo 超了)" "ok"
+    done
 
     echo
     if [ "$FAIL" -eq 0 ]; then
@@ -416,6 +442,69 @@ ENVEOF
 fi
 
 # ============================================================
+step "自检：数据库连接预算"
+# ============================================================
+
+# worker 数按 CPU 核数来（逻辑在 pick_workers 里，有自测）。
+# ⚠️ 在这里就算出来 —— 下面的连接预算自检和 systemd 都要用。
+CPU_N=$(nproc 2>/dev/null || echo 2)
+WORKERS=$(pick_workers "$CPU_N")
+
+# ⚠️ 为什么单独查这一项。
+#
+# 2026-10-07 实测：Supabase 的连接池（`pooler.supabase.com:5432`）
+# **只允许 10 条并发连接**，第 11 条报 `(EMAXCONNSESSION) max clients reached`。
+# 而当时每个 worker 就占了 10 条 —— 这个错**只有在演示当天有人并发访问时
+# 才会冒出来**，而且报错是「连不上数据库」，很难联想到是连接数不够。
+#
+# 所以在这里**主动试一次**：按当前配置开满连接，
+# 开不满就在部署阶段就报出来，而不是等到演示。
+# ⚠️ 这里的 `4` 是 `pool_size + max_overflow`，来自
+# `backend/app/db/session.py`（2 + 2）。**改那边就要改这里** ——
+# 两处不一致的话，这个自检会给你一个假的安心。
+CONN_BUDGET=$((WORKERS * 4))
+info "按 ${WORKERS} 个 worker × 4 条 = ${CONN_BUDGET} 条连接试连…"
+if sudo -u "$APP_USER" bash -c "cd '${APP_DIR}/backend' && '${VENV}/bin/python' - '${CONN_BUDGET}'" <<'PYEOF' > /tmp/fridge_conn.log 2>&1
+import sys
+from sqlalchemy import create_engine, text
+from app.core.config import settings
+
+want = int(sys.argv[1])
+held = []
+try:
+    for i in range(1, want + 1):
+        e = create_engine(settings.DATABASE_URL, pool_size=1, max_overflow=0)
+        c = e.connect()
+        c.execute(text("SELECT 1"))
+        held.append((e, c))
+    print(f"OK 开满 {want} 条连接")
+except Exception as ex:
+    print(f"FAIL 只开到 {len(held)} 条就失败了：{type(ex).__name__}: {ex}")
+    sys.exit(1)
+finally:
+    for e, c in held:
+        try:
+            c.close()
+        except Exception:
+            pass
+        try:
+            e.dispose()
+        except Exception:
+            pass
+PYEOF
+then
+    ok "连接预算够用（$(grep -o '开满 [0-9]* 条连接' /tmp/fridge_conn.log | tail -1)）"
+else
+    warn "连不上 ${CONN_BUDGET} 条 —— 部署上去之后并发一高就会报「连不上数据库」"
+    cat /tmp/fridge_conn.log | sed 's/^/    /' || true
+    warn "常见的两个原因："
+    warn "  1. 本机开发的后端还开着，占着同一份连接额度 —— 先停掉它"
+    warn "  2. Supabase 的连接上限比预期低 —— 把 backend/app/db/session.py 的"
+    warn "     pool_size / max_overflow 调小，或把 worker 数降到 1"
+    die "先解决连接数问题再部署"
+fi
+
+# ============================================================
 step "跑一遍测试（用 SQLite，不碰生产库）"
 # ============================================================
 
@@ -439,10 +528,8 @@ fi
 step "systemd 守护（开机自启 + 崩溃自动重启）"
 # ============================================================
 
-# worker 数按 CPU 核数来（逻辑在 pick_workers 里，有自测）。
-# 文档里写死 2 是因为那是 2 核机器；核数更多就多开几个，但封顶 4。
-CPU_N=$(nproc 2>/dev/null || echo 2)
-WORKERS=$(pick_workers "$CPU_N")
+# worker 数在「自检：数据库连接预算」那一步已经算好了（$WORKERS）。
+# 这里不重算 —— 重算一次就有两处能改，迟早会不一致。
 
 cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<UNITEOF
 [Unit]

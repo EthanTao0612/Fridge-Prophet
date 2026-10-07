@@ -18,11 +18,21 @@ _is_sqlite = settings.DATABASE_URL.startswith("sqlite")
 # 2. `pool_recycle=1800`：半小时换一批连接。和 pre_ping 是双保险 ——
 #    pre_ping 管「别用死连接」，recycle 管「别把死连接一直留在池子里」。
 #
-# 3. `pool_size` / `max_overflow`：把总连接数压到可控范围。
-#    SQLAlchemy 默认是 5 + 10 = 15，而 systemd 里跑 2 个 worker，
-#    最坏情况就是 30 条 —— Supabase 免费版扛得住但没余量，
-#    演示当天要是有人并发访问就容易撞上「too many clients」。
-#    改成 5 + 5 = 10，两个 worker 一共 20 条，留出余量。
+# 3. ⚠️⚠️ **总连接数不能超过 10**（`pool_size + max_overflow` × worker 数 ≤ 10）。
+#
+#    2026-10-07 实测：Supabase 那个连接池（`pooler.supabase.com:5432`）
+#    **只允许 10 条并发连接**，第 11 条直接报
+#    `FATAL: (EMAXCONNSESSION) max clients reached`。
+#
+#    ⚠️ 这个额度是**整个项目共享**的 —— 本机开发的后端和服务器上的后端
+#    抢同一份。所以**部署前要把本机的后端停掉**，否则两边一起抢，
+#    服务器会随机报「连不上数据库」，看起来像 Supabase 挂了。
+#
+#    之前的配置是 5 + 5 = 10 **每个 worker**，注释里还写着
+#    「两个 worker 一共 20 条，留出余量」—— 20 早就超了，是错的。
+#    现在改成每个 worker 4 条，配合 `deploy.sh` 里 worker 封顶 2 个 → 最多 8 条。
+_pool_size = 2
+_max_overflow = 2
 _engine_kwargs: dict = {"echo": False}
 if _is_sqlite:
     _engine_kwargs["connect_args"] = {"check_same_thread": False}
@@ -30,8 +40,8 @@ else:
     _engine_kwargs.update(
         pool_pre_ping=True,
         pool_recycle=1800,
-        pool_size=5,
-        max_overflow=5,
+        pool_size=_pool_size,
+        max_overflow=_max_overflow,
     )
 
 engine = create_engine(settings.DATABASE_URL, **_engine_kwargs)
