@@ -594,14 +594,35 @@ UNITEOF
 systemctl daemon-reload
 systemctl enable --quiet "$SERVICE_NAME"
 systemctl restart "$SERVICE_NAME"
-sleep 3
 
-if systemctl is-active --quiet "$SERVICE_NAME"; then
-    ok "服务已启动（${WORKERS} 个 worker，只监听 127.0.0.1:8000）"
+# ⚠️ 别用固定 sleep 判断「启动成功」。
+#
+# 2026-10-07 踩到：`sleep 3` 之后 curl /health 拿到 **502**，看着像部署失败 ——
+# 实际是应用还在启动（要连数据库 + 探 Supabase Storage，**约 6 秒**），
+# 再等一会儿就 200 了。
+#
+# 而且 `systemctl is-active` 只说 systemd 认为进程活着，
+# **不代表它已经在监听端口**（uvicorn 起 worker 还要一两秒）。
+#
+# 所以改成**轮询 /health**，最多等 30 秒。这个判据是「真的能服务请求了」。
+info "等应用起来（最多 30 秒）…"
+READY=0
+for _ in $(seq 1 30); do
+    if curl -fsS --max-time 3 "http://127.0.0.1:8000/health" >/dev/null 2>&1; then
+        READY=1
+        break
+    fi
+    sleep 1
+done
+
+if [ "$READY" = "1" ]; then
+    ok "服务已启动并开始响应（${WORKERS} 个 worker，只监听 127.0.0.1:8000）"
 else
     echo
+    systemctl status "$SERVICE_NAME" --no-pager -l | head -20 || true
+    echo
     journalctl -u "$SERVICE_NAME" -n 30 --no-pager || true
-    die "服务启动失败，日志在上面"
+    die "等了 30 秒 /health 还是不通，日志在上面"
 fi
 
 # ============================================================
