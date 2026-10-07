@@ -13,6 +13,10 @@
 所以两个都要跑。部署后只有这个脚本能发现 Nginx 配错、HTTPS 证书没生效这类问题。
 
 不需要 AI 密钥 —— 后端会自动降级 MOCK 模式，链路照样完整。
+
+⚠️ **需要能读到数据库**：注册接口要求邮箱验证码，而验证码只会发给真实邮箱，
+   外部客户端拿不到。本脚本的做法是**直接把码写进库**（见 prepare_register_code）。
+   所以要在**后端那台机器上**跑，或者本机能读到 backend/.env。
 """
 from __future__ import annotations
 
@@ -23,8 +27,10 @@ import struct
 import sys
 import urllib.error
 import urllib.request
+import random
 import uuid
 import zlib
+from pathlib import Path
 from typing import Any
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8000"
@@ -145,6 +151,56 @@ def section(n: str, title: str) -> None:
     print(f"\n=== {n}. {title} ===")
 
 
+def prepare_register_code(email: str) -> str | None:
+    """给注册测试准备一个验证码 —— **直接写进数据库**。
+
+    ## 为什么不走 /auth/send-code
+
+    注册接口要求邮箱验证码，而验证码**只会发给真实邮箱**。
+    一个跑在外面的 HTTP 客户端拿不到它：
+
+      - 库里存的是 `sha256("邮箱:码")`，**不是明文**
+      - 配了 SMTP 之后码**不再打日志**（只有没配 SMTP 时才打）
+      - 用 `@example.com` 这种假邮箱的话，真 SMTP 会退信
+
+    所以这里**直接把码写进库**（后端校验的就是这张表）：
+    既不用发邮件，也仍然把注册接口本身完整测到了。
+
+    ⚠️ 只在测试脚本里这么做。应用当然不能这样。
+
+    需要能读到数据库 —— 在**后端那台机器上**跑本脚本，
+    或者本机能读到 `backend/.env`。连不上就返回 None，调用方会明确报错。
+    """
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from datetime import datetime, timedelta, timezone
+
+        from app.db.session import SessionLocal
+        from app.models.verification import EmailVerification
+        from app.services.email_service import _hash
+    except Exception:
+        return None
+
+    code = f"{random.randint(0, 999999):06d}"
+    try:
+        db = SessionLocal()
+        try:
+            db.add(
+                EmailVerification(
+                    email=email.strip().lower(),
+                    code_hash=_hash(code, email),
+                    purpose="register",
+                    expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+                )
+            )
+            db.commit()
+        finally:
+            db.close()
+    except Exception:
+        return None
+    return code
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="后端 HTTP 冒烟测试")
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL, help="后端地址")
@@ -168,9 +224,22 @@ def main() -> int:
     # ---------- 1. 注册 ----------
     section("1", "注册账号")
     email = f"smoke_{uuid.uuid4().hex[:12]}@example.com"
+    code = prepare_register_code(email)
+    if code is None:
+        check(
+            "能准备注册验证码（需要数据库访问）",
+            False,
+            "连不上数据库。请在**后端那台机器上**跑本脚本，或确保能读到 backend/.env",
+        )
+        return 1
     status, data = c.post(
         "/api/v1/auth/register",
-        json_body={"email": email, "password": "SmokeTest123", "nickname": "冒烟测试"},
+        json_body={
+            "email": email,
+            "code": code,
+            "password": "SmokeTest123",
+            "nickname": "冒烟测试",
+        },
     )
     if not check("注册成功", status in (200, 201), f"HTTP {status} {data}"):
         return 1
@@ -464,8 +533,10 @@ def main() -> int:
 
     # 另起一个客户端当「家人」，免得把主测试账号的 token 弄乱
     mate = Client(base)
+    mate_email = f"smokefam_{uuid.uuid4().hex[:10]}@example.com"
     status, mate_data = mate.post("/api/v1/auth/register", json_body={
-        "email": f"smokefam_{uuid.uuid4().hex[:10]}@example.com",
+        "email": mate_email,
+        "code": prepare_register_code(mate_email) or "",
         "password": "SmokeTest123", "nickname": "家人"})
     if check("家人账号注册成功", status in (200, 201), f"HTTP {status} {mate_data}"):
         mate.token = mate_data.get("access_token")
@@ -511,10 +582,12 @@ def main() -> int:
     # ---------- 9. 数据隔离 ----------
     section("9", "数据隔离（别人的数据你看不到）")
     other = Client(base)
+    other_email = f"other_{uuid.uuid4().hex[:12]}@example.com"
     status, data = other.post(
         "/api/v1/auth/register",
         json_body={
-            "email": f"other_{uuid.uuid4().hex[:12]}@example.com",
+            "email": other_email,
+            "code": prepare_register_code(other_email) or "",
             "password": "SmokeTest123",
             "nickname": "路人",
         },
