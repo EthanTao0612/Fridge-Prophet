@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -107,7 +108,7 @@ fun HomeScreen(
                 onClick = onOpenScan,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(72.dp),
+                    .heightIn(min = 72.dp),
                 shape = RoundedCornerShape(18.dp),
             ) {
                 Icon(
@@ -284,7 +285,7 @@ fun HomeScreen(
                 enabled = !state.generating,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(52.dp),
+                    .heightIn(min = 52.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = MaterialTheme.colorScheme.secondary,
                     contentColor = MaterialTheme.colorScheme.onSecondary,

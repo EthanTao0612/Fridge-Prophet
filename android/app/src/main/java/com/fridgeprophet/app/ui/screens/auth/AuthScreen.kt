@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
@@ -109,7 +110,7 @@ fun AuthScreen(
                         Button(
                             onClick = viewModel::sendCode,
                             enabled = state.canSendCode,
-                            modifier = Modifier.height(56.dp),
+                            modifier = Modifier.heightIn(min = 56.dp),
                         ) {
                             when {
                                 state.sendingCode -> CircularProgressIndicator(
@@ -204,7 +205,7 @@ fun AuthScreen(
                 enabled = state.canSubmit,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(52.dp),
+                    .heightIn(min = 52.dp),
             ) {
                 if (state.loading) {
                     CircularProgressIndicator(

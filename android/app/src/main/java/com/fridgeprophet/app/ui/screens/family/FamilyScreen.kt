@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -244,7 +245,7 @@ private fun NotJoinedContent(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(top = 10.dp)
-                    .height(48.dp),
+                    .heightIn(min = 48.dp),
             ) {
                 if (busy) {
                     CircularProgressIndicator(
@@ -274,7 +275,7 @@ private fun NotJoinedContent(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(top = 10.dp)
-                    .height(48.dp),
+                    .heightIn(min = 48.dp),
             ) { Text("创建家庭") }
         }
 
@@ -436,7 +437,7 @@ private fun JoinedContent(
             enabled = !busy,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(48.dp),
+                .heightIn(min = 48.dp),
         ) {
             Text(
                 text = if (isOwner) "解散家庭" else "退出家庭",
