@@ -189,7 +189,7 @@ fun HomeScreen(
 
                 if (state.items.isEmpty()) {
                     Text(
-                        text = "还没有食材。点上面的按钮扫描一次，AI 会自动识别并建立库存。",
+                        text = "冰箱还空着。拍一张照片试试",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 10.dp),

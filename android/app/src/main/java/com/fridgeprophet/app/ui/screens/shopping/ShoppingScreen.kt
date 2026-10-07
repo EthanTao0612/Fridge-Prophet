@@ -71,7 +71,7 @@ fun ShoppingScreen(viewModel: ShoppingViewModel = hiltViewModel()) {
             }
 
             Text(
-                text = "清单里的数量是「菜谱需要 − 冰箱已有」的差集，后端算的，不是估的。",
+                text = "只列你缺的，已经有的不会重复买",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -108,7 +108,7 @@ fun ShoppingScreen(viewModel: ShoppingViewModel = hiltViewModel()) {
 
             state.lists.isEmpty() -> EmptyState(
                 title = "还没有采购清单",
-                description = "去「菜谱」页生成菜谱，缺的食材就能一键变成清单；" +
+                description = "去「菜谱」页挑几道菜，缺的料会自动进清单" +
                     "也可以点右上角按已有菜谱生成。",
                 actionText = "按菜谱生成清单",
                 onAction = { showPicker = true },
@@ -264,7 +264,7 @@ private fun ShoppingListCard(
         if (showDetail) {
             if (list.items.isEmpty()) {
                 Text(
-                    text = "这个清单是空的——说明这些菜的食材你都已经有了。",
+                    text = "食材都齐了，不用买",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 10.dp),
@@ -431,7 +431,7 @@ private fun RecipePickerDialog(
         text = {
             Column {
                 Text(
-                    text = "选中你想做的菜，我会把它们的缺料合并成一张清单，重复的食材会自动合并。",
+                    text = "选几道想做的，缺的料我合成一张单子",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

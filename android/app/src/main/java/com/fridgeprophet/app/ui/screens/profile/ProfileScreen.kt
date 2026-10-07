@@ -336,7 +336,7 @@ fun ProfileScreen(
                         TextButton(onClick = { addingFamily = true }) { Text("+ 添加") }
                     }
                     Text(
-                        text = "一起吃饭的人越多，口味冲突越难兼顾。把他们的忌口记下来，生成菜谱时会一起考虑。",
+                        text = "把家人的忌口记下来，推荐时会避开",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -841,7 +841,7 @@ private fun PrivacyCard(
         }
 
         Text(
-            text = "无论是否公开，你的过敏信息只用于生成菜谱时规避，不会展示给任何人。",
+            text = "过敏信息只有我知道，用来避开这些食材，不会展示给任何人",
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(top = 10.dp),
@@ -1201,7 +1201,7 @@ private fun BodyDialog(
                 )
 
                 Text(
-                    text = "这些数字只用来估算每日热量需求，不会上传给第三方，也不构成医学建议。",
+                    text = "只用来估算每日热量，不上传、不对外",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

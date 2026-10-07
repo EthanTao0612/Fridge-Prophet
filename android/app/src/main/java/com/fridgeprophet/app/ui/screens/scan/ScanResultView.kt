@@ -174,7 +174,7 @@ fun ResultPhase(
                 }
             }
             Text(
-                text = "加入后系统会按食材类型自动估算保质期，并开始计算新鲜度。",
+                text = "加进来之后，我帮你盯着新鲜度",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -287,7 +287,7 @@ private fun FoodEditCard(
                     supportingText = if (food.hasInvalidDates) "过期日期不能早于购买日期" else null,
                 )
                 Text(
-                    text = "留空时按「今天购买 + 系统按食材名估算的保质期」入库。" +
+                    text = "留空也行，我按食材估个大概" +
                         "手上这盒已经买了几天的话，把购买日期改成实际那天更准。",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,

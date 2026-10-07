@@ -137,7 +137,7 @@ fun RecipesScreen(
                     state.loadingRecommend -> LoadingBox()
                     recs.isEmpty() -> EmptyState(
                         title = "还没有能推荐的菜",
-                        description = "先去冰箱页加几样食材 —— 这里会立刻告诉你能做什么，不用等 AI",
+                        description = "先去冰箱页加几样食材，这里马上告诉你做什么",
                     )
                     else -> LazyColumn(
                         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
@@ -145,7 +145,7 @@ fun RecipesScreen(
                     ) {
                         item {
                             Text(
-                                text = "根据你冰箱里的食材，有 ${state.readyCount} 道现在就能做 · 点任意一道看做法",
+                                text = "现在能做 ${state.readyCount} 道，点开看做法",
                                 style = MaterialTheme.typography.labelLarge,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(start = 4.dp, bottom = 2.dp),

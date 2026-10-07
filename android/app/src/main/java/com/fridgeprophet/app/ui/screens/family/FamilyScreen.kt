@@ -211,7 +211,7 @@ private fun NotJoinedContent(
         SectionCard {
             Text(text = "和家人共用一台冰箱", style = MaterialTheme.typography.titleMedium)
             Text(
-                text = "加入同一个家庭后，冰箱、菜谱、采购清单全家共享 —— " +
+                text = "加入后，冰箱、菜谱、采购清单全家共享" +
                     "谁买回来的东西，别人都看得见。\n" +
                     "个人画像和健康数据不会共享。",
                 style = MaterialTheme.typography.labelMedium,
@@ -519,7 +519,7 @@ private fun MemberActionDialog(
                     )
                 } else {
                     Text(
-                        text = "「成员」能看能改；「只读」只能看，不能动冰箱和菜谱。",
+                        text = "成员能改，只读只能看",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

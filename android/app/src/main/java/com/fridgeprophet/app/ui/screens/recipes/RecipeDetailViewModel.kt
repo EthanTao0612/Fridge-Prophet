@@ -110,7 +110,7 @@ class RecipeDetailViewModel @Inject constructor(
                 is ApiResult.Success -> {
                     val label = when (action) {
                         "favorite" -> "已收藏，之后会优先推荐类似的菜"
-                        "cook" -> "已记录「做过」。系统会据此逐步了解你的口味"
+                        "cook" -> "记下了。我会慢慢摸清你的口味"
                         "skip" -> "已记录「不想吃」。连续跳过同一道菜会把它排除"
                         else -> "已记录"
                     }

@@ -102,7 +102,7 @@ fun ScanScreen(
                         //   1 样 → 3 秒；40 样 → 51 秒
                         // 原来这里写的是「通常需要 5-20 秒」，对拍满一整箱的情况是错的，
                         // 会让人以为卡住了。所以改成按数量分档说明。
-                        text = "模型要逐项判断种类和数量，食材越多越慢：几样大约 3 秒，十几样约 20 秒。",
+                        text = "食材越多越慢：几样大概 3 秒，十几样要 20 秒",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center,

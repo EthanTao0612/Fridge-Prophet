@@ -911,7 +911,7 @@ private fun AddItemDialog(
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Text(
-                    text = "不确定就选「系统估算」，会按食材名查内置的默认保质期。",
+                    text = "拿不准就选「系统估算」，我按食材名猜一个",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1060,7 +1060,7 @@ private fun EditItemDialog(
                 )
 
                 Text(
-                    text = "「剩余天数」和「过期日期」填哪个都行，会自动换算。" +
+                    text = "填剩余天数或过期日期都行，我自动换算" +
                         "清空表示「没有保质期信息」，系统不会再提醒。",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,

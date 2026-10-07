@@ -113,7 +113,7 @@ fun OnboardingScreen(
                 3 -> {
                     ChoiceStep(
                         title = "你的饮食目标？",
-                        hint = "系统会据此筛选菜品",
+                        hint = "我会按这个筛菜品",
                         options = OnboardingOptions.dietGoals,
                         selected = state.dietGoal,
                         onSelect = viewModel::setDietGoal,

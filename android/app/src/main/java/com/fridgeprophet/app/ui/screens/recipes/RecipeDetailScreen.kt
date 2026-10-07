@@ -271,7 +271,7 @@ private fun RecipeDetailContent(
                 )
             }
             Text(
-                text = "打勾的是你冰箱里已经有的（后端按真实库存核对过）",
+                text = "打勾的 = 冰箱里已经有了",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 2.dp),
@@ -590,7 +590,7 @@ private fun CookDialog(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 Text(
-                    text = "确认后会按下面的量从冰箱扣减。数字可以改；清空或填 0 表示这项不动。",
+                    text = "确认后按这些数量扣。数字能改，留空就不动它",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
