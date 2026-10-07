@@ -330,6 +330,28 @@ def main() -> int:
                     break
     check("没有词库条目被挡刀规则抢走", stolen, [])
 
+    print("\n=== 8c. 用户选的类别 vs 名字推断（2026-10-07 加）===")
+    # Ethan 提的场景：扫描出「AD钙奶」，名字里有「奶」→ 被归成蛋奶；
+    # 「果粒奶优」有「果」→ 被归成水果。用户在确认页选的类别等于没用。
+    #
+    # 规则：**名字给不出具体图时，用户选的类别说了算。**
+    # ⚠️ 名字能给出具体图的话那张更准（「牛奶」+ 饮品 还是 milk.jpg）——
+    # 我第一版写成「不一致就覆盖」，把牛奶也换掉了，所以这条要钉住。
+    from app.services.ingredient_image_service import resolve_ingredient_image as _img
+
+    for name, cat, want in [
+        ("AD钙奶", "饮品", "_universal-drink"),      # 名字命中「奶」，用户纠正
+        ("AD钙奶", "零食", "_universal-snack"),
+        ("果粒奶优", "饮品", "_universal-drink"),     # 名字命中「果」，用户纠正
+        ("薯片", "零食", "potato-chips"),            # 名字本来就有具体图
+        ("牛奶", "饮品", "milk"),                    # ⚠️ 别被用户选的类别换掉
+        ("苹果", "水果", "apple"),                   # ⚠️ 同上
+        ("猪肉", "肉类", "pork"),                    # ⚠️ 同上
+        ("AD钙奶", "其他", "_universal-dairy-egg"),   # 「其他」当没填，走名字推断
+    ]:
+        got = _img(name, cat) or ""
+        check(f"{name} + 类别「{cat}」→ 含 {want}", want in got, True)
+
     print("\n=== 9. 只返回磁盘上真实存在的图 ===")
     keys_on_disk = set(available_keys())
     print(f"         磁盘上现有 {len(keys_on_disk)} 张食材图")

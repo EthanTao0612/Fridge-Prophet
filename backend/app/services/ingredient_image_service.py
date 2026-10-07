@@ -481,6 +481,8 @@ def resolve_ingredient_image(name: str, stored_category: str | None = None) -> s
     if key and _exists(key):
         return _url(key)
 
+    from app.services.ingredient_category import resolve_category, universal_image_key
+
     # 空名字直接返回 None。
     # 不加这道闸的话，空名字会被归到「其他」，然后退到「其他」的万能图 ——
     # 客户端会拿着一张「其他」的图去配一个空的食材行，很怪。
@@ -488,7 +490,26 @@ def resolve_ingredient_image(name: str, stored_category: str | None = None) -> s
         return None
 
     # 具体图没有（或规则没命中）→ 退到分类万能图
-    from app.services.ingredient_category import resolve_category, universal_image_key
+    #
+    # ⚠️⚠️ **用户明确选的类别，优先于「名字推断」。**
+    #
+    # 2026-10-07 Ethan 提的场景：扫描出「AD钙奶」，名字里有个「奶」，
+    # 关键词规则把它归成蛋奶 → 配蛋奶万能图。用户在确认页明明选了
+    # 「饮品」，却什么都没变 —— 选了等于没选。
+    # 「果粒奶优」更典型：名字里有「果」，被归成水果。
+    #
+    # ⚠️ 只在**名字给不出具体图**时才让用户说了算 ——
+    # 名字能给出具体图的话那张更准（「牛奶」+ 饮品 还是用 milk.jpg，
+    # 不该被换成饮品万能图）。
+    #
+    # ⚠️ 跳过「其他」—— 那是数据库默认值，分不清「用户主动选了其他」
+    # 还是「压根没填」，一律当没填。
+    if stored_category and stored_category != "其他":
+        chosen = universal_image_key(stored_category)
+        if chosen and _exists(chosen):
+            logger.debug("食材 %s：名字给不出具体图，按用户选的「%s」配万能图",
+                         name, stored_category)
+            return _url(chosen)
 
     category = resolve_category(name, stored_category)
     fallback_key = universal_image_key(category)
