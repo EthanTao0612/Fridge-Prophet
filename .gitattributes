@@ -1,47 +1,15 @@
-# ============================================================
-#  换行符规则
+# 统一换行符 —— 否则 Windows 上 checkout 出来的 .sh 会带 CRLF，
+# scp 到 Linux 服务器上直接跑不起来（会报 `$'\r': command not found`）。
 #
-#  为什么需要这个文件：
-#  Windows 默认 core.autocrlf=true，checkout 时会把 LF 悄悄换成 CRLF。
-#  对 .bat 无所谓，但对 shell 脚本是致命的 ——
-#  Linux 上会报 "bad interpreter: /bin/sh^M"，而且这个 ^M 是隐藏字符，
-#  肉眼完全看不出来，排查起来极其痛苦。
-#
-#  CI 的 runner 是 Linux，gradlew 一旦带上 CR，构建直接失败。
-#  所以在这里把规则写死，不再依赖每个人的本机 git 配置。
-# ============================================================
-
-# 默认：仓库内一律存 LF，checkout 时也保持 LF
-* text=auto eol=lf
-
-# ---------- 必须保持 LF 的（加了 eol=lf 双保险）----------
-*.sh   text eol=lf
-*.py   text eol=lf
-*.kt   text eol=lf
-*.kts  text eol=lf
-*.yml  text eol=lf
-*.yaml text eol=lf
-gradlew text eol=lf
-
-# ---------- 二进制：禁止任何换行/编码转换 ----------
-# 这些文件被 git 当作文本处理的话会被改坏（比如 JPG 里恰好出现 0x0D 0x0A）
-*.jpg    binary
-*.jpeg   binary
-*.png    binary
-*.gif    binary
-*.webp   binary
-*.ico    binary
-*.jar    binary
-*.jks    binary
-*.keystore binary
-*.apk    binary
-*.aab    binary
-*.db     binary
-*.ttf    binary
-*.otf    binary
-*.woff   binary
-*.woff2  binary
-
-# ---------- 锁文件：合并时不要试图自动解决冲突 ----------
-package-lock.json -diff
-gradle.lockfile   -diff
+# 2026-10-07 踩过：部署脚本用 scp 传上去之后，
+#   line 49: $'\r': command not found
+#   line 50: set: pipefail: invalid option name
+# 整个部署直接失败，而且报错完全看不出是换行符的问题。
+*.sh            text eol=lf
+*.py            text eol=lf
+*.md            text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
+Dockerfile      text eol=lf
+*.bat           text eol=crlf
+*.ps1           text eol=crlf
