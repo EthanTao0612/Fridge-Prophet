@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -18,6 +19,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -59,6 +62,7 @@ fun ResultPhase(
     onPurchaseDate: (Int, java.time.LocalDate?) -> Unit,
     onExpiryDate: (Int, java.time.LocalDate?) -> Unit,
     onRemove: (Int) -> Unit,
+    onCategory: (Int, String) -> Unit,
     onAddManual: () -> Unit,
     onConfirm: () -> Unit,
     onDismissError: () -> Unit,
@@ -117,6 +121,8 @@ fun ResultPhase(
                 itemsIndexed(state.foods) { index, food ->
                     FoodEditCard(
                         food = food,
+                        categories = state.categoryNames,
+                        onCategory = { onCategory(index, it) },
                         onToggle = { onToggle(index) },
                         onRename = { onRename(index, it) },
                         onQuantity = { onQuantity(index, it) },
@@ -193,6 +199,8 @@ private fun FoodEditCard(
     onPurchaseDate: (LocalDate?) -> Unit,
     onExpiryDate: (LocalDate?) -> Unit,
     onRemove: () -> Unit,
+    categories: List<String>,
+    onCategory: (String) -> Unit,
 ) {
     // 日期区默认收起：一次扫描常有十几种食材，全展开会让页面长得没法看。
     // 只在用户真的想调日期时才展开那一项。
@@ -237,6 +245,40 @@ private fun FoodEditCard(
                 singleLine = true,
                 modifier = Modifier.weight(1f),
             )
+        }
+
+        // 类别选择：**点开折叠、选完自动收回**。
+        //
+        // 为什么要有这个（Ethan 2026-10-07 提的）：像「AD钙奶」「果粒奶优」
+        // 这种具体商品没法一个个加进词库，而名字里的关键词还会把它们归错
+        //（「奶」→ 蛋奶、「果」→ 水果）。让用户点一下类别，后端就用
+        // 该类别的万能图 —— 长尾商品靠用户自己归一次类就够了。
+        if (categories.isNotEmpty()) {
+            var categoryOpen by remember { mutableStateOf(false) }
+            Box(modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
+                OutlinedButton(
+                    onClick = { categoryOpen = true },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("类别：${food.category}")
+                    Spacer(Modifier.weight(1f))
+                    Text("▾")
+                }
+                DropdownMenu(
+                    expanded = categoryOpen,
+                    onDismissRequest = { categoryOpen = false },
+                ) {
+                    categories.forEach { name ->
+                        DropdownMenuItem(
+                            text = { Text(name) },
+                            onClick = {
+                                onCategory(name)
+                                categoryOpen = false
+                            },
+                        )
+                    }
+                }
+            }
         }
 
         Row(

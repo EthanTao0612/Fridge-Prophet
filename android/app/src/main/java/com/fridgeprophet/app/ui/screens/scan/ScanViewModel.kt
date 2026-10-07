@@ -22,6 +22,16 @@ data class EditableFood(
     val quantityText: String,
     val unit: String,
     val confidence: Double,
+    /**
+     * 用户选的食材类别。**名字认不出来的东西靠它配图。**
+     *
+     * 场景（Ethan 2026-10-07 提的）：扫出「AD钙奶」「果粒奶优」这种
+     * 具体商品，名字里的关键词会把它归错（「奶」→ 蛋奶、「果」→ 水果）。
+     * 用户在这里选一次类别，后端就用该类别的万能图。
+     *
+     * 默认取 AI 猜的；AI 没给就是「其他」（后端当「没填」处理，走名字推断）。
+     */
+    val category: String = "其他",
     val storageLocation: String,
     val shelfLifeDays: Int?,
     val included: Boolean = true,
@@ -47,6 +57,9 @@ data class EditableFood(
             quantity = qty,
             unit = unit.ifBlank { "个" },
             confidence = confidence,
+            // ⚠️ 一定要带 —— 不带的话后端只拿到「其他」，用户选的类别就白选了
+            //（而且冰箱页的分类会一直不准）
+            category = category,
             storageLocation = storageLocation,
             shelfLifeDays = shelfLifeDays,
             purchaseDate = purchaseDate?.toString(),
@@ -72,6 +85,14 @@ data class ScanUiState(
      */
     val quotaLeft: Int = -1,
     val quotaLow: Boolean = false,
+    /**
+     * 可选的食材类别（12 个）。
+     *
+     * ⚠️ 从 `GET /inventory/categories` 拿，**不要在客户端硬编码** ——
+     * 顺序和名字只在后端 `ingredient_category.CATEGORIES` 定义一次，
+     * 客户端抄一份迟早会漂移。拿不到就是空列表，界面不显示选择器。
+     */
+    val categoryNames: List<String> = emptyList(),
     val error: String? = null,
     val confirming: Boolean = false,
     val confirmedCount: Int = 0,
@@ -102,6 +123,13 @@ class ScanViewModel @Inject constructor(
                 }
                 // 状态接口失败不影响使用 —— 配额保持 -1（「还不知道」），
                 // 界面就不会误判成「额度用完」
+                is ApiResult.Failure -> Unit
+            }
+
+            // 顺便把类别列表拉回来（确认页的类别选择器要用）。
+            // 失败就算了 —— 拿不到就不显示选择器，不影响扫描主流程。
+            when (val r = repository.categoryOrder()) {
+                is ApiResult.Success -> _state.update { it.copy(categoryNames = r.data) }
                 is ApiResult.Failure -> Unit
             }
         }
@@ -144,6 +172,7 @@ class ScanViewModel @Inject constructor(
                             foods = scan.foods.map { food ->
                                 EditableFood(
                                     name = food.name,
+                                    category = food.category,
                                     quantityText = if (food.quantity % 1.0 == 0.0) {
                                         food.quantity.toInt().toString()
                                     } else {
@@ -235,6 +264,17 @@ class ScanViewModel @Inject constructor(
 
     fun backToCamera() {
         _state.update { it.copy(phase = ScanPhase.CAMERA, foods = emptyList(), error = null) }
+    }
+
+    /** 用户改了某一样食材的类别 */
+    fun onCategory(index: Int, category: String) {
+        _state.update { st ->
+            st.copy(
+                foods = st.foods.mapIndexed { i, f ->
+                    if (i == index) f.copy(category = category) else f
+                },
+            )
+        }
     }
 
     /** 用户点「确认加入冰箱」——这一步才真正写库 */

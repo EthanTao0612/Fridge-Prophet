@@ -122,6 +122,7 @@ fun ScanScreen(
                 onPurchaseDate = viewModel::setPurchaseDate,
                 onExpiryDate = viewModel::setExpiryDate,
                 onRemove = viewModel::removeFood,
+                onCategory = viewModel::onCategory,
                 onAddManual = viewModel::addManualFood,
                 onConfirm = { viewModel.confirm(onFinished) },
                 onDismissError = viewModel::clearError,
