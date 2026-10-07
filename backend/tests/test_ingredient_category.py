@@ -49,7 +49,16 @@ def check(label: str, actual, expected) -> None:
 def main() -> int:
     print("=== 1. 两张表必须对得上 ===")
     rule_keys = {key for _kw, key in INGREDIENT_RULES}
-    unmapped = sorted(rule_keys - set(KEY_CATEGORY))
+    # ⚠️ `_universal-*` 要排除掉。
+    #
+    # 它们**本身就是分类的代表图**（「主食」这个分类的代表就是
+    # `_universal-staple.jpg`），所以「这个 key 属于哪个分类」对它没有意义 ——
+    # 硬要标的话就是自己指向自己。
+    #
+    # 拼写错误不用怕漏：`test_ingredient_rules.py` 的 6b 会校验
+    # 「规则的值都指向真实存在的图」，写错一个字母就会被抓住。
+    universal_keys = {k for k in rule_keys if k.startswith("_universal-")}
+    unmapped = sorted(rule_keys - set(KEY_CATEGORY) - universal_keys)
     check("图片规则表里每个 key 都标了分类", unmapped, [])
 
     # KEY_CATEGORY 允许包含规则表还没有的 key —— 那是**给后续扩充预留的**

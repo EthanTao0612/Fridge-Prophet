@@ -117,11 +117,12 @@ def main() -> int:
     #   「金枪鱼罐头」会被「鱼」抢成生鱼图 ——
     #   用户看到新鲜桃子和生鱼，而他要找的是一罐能直接开的东西。
     for name, want in [
-        ("水果罐头", "canned-fruit"),   # 词库精确
+        ("水果罐头", "canned-fruit"),
         ("黄桃罐头", "canned-fruit"),   # 否则被「桃」抢走
         ("什锦罐头", "canned-fruit"),
         ("山楂罐头", "canned-fruit"),
-        ("肉食罐头", "canned-meat"),    # 词库精确
+        ("菠萝罐头", "canned-fruit"),
+        ("肉食罐头", "canned-meat"),
         ("午餐肉罐头", "canned-meat"),
         ("金枪鱼罐头", "canned-meat"),  # 否则被「鱼」抢走
         ("豆豉鲮鱼罐头", "canned-meat"),  # 否则被「豆豉」抢走
@@ -129,10 +130,65 @@ def main() -> int:
     ]:
         check(f"{name} -> {want}", resolve_ingredient_key(name), want)
 
-    # 「玉米罐头」**故意**不拦：它既不甜也不荤，
-    # 落到「玉米」的图反而更能让人认出是什么（Ethan 也说过不给它单独配图）。
-    check("玉米罐头 仍然走玉米的图（故意不拦）",
-          resolve_ingredient_key("玉米罐头"), "corn")
+    # ⚠️ **「肉食罐头」不能被兜底规则抢走**。
+    # 兜底的 `("罐头",)` 是子串规则，排在它后面的写法全会被它吃掉 ——
+    # 所以「水果罐头」「肉食罐头」必须显式列在兜底之前。
+    # 这两条如果哪天被删掉，就会出现「一罐午餐肉配水果罐头的图」。
+    for name, want in [
+        ("水果罐头", "canned-fruit"),
+        ("肉食罐头", "canned-meat"),
+        ("肉类罐头", "canned-meat"),
+        ("甜罐头", "canned-fruit"),
+    ]:
+        check(f"兜底不抢「{name}」", resolve_ingredient_key(name), want)
+
+    # **既不甜也不荤**的罐头，各自走更贴切的原料图。
+    # 这几条同样必须排在兜底之前，否则会被配成水果罐头。
+    for name, want in [
+        ("玉米罐头", "corn"),
+        ("蘑菇罐头", "mushroom"),
+        ("番茄罐头", "tomato"),
+        ("八宝粥罐头", "eight-treasure-porridge"),
+        ("芦笋罐头", "asparagus"),
+        ("蔬菜罐头", "_universal-vegetable"),
+    ]:
+        check(f"{name} -> {want}（排在兜底之前）",
+              resolve_ingredient_key(name), want)
+
+    # ⭐ 兜底：光秃秃的「罐头」。
+    #
+    # 不写这条的话它解析失败 → 退到「其他」分类的万能图，
+    # 而那张图是**香菇 + 红枣**。Ethan 2026-10-07 报的
+    # 「罐头的图片不能正常显示」就是这个。
+    check("光秃秃的「罐头」有图（不能退到香菇红枣）",
+          resolve_ingredient_key("罐头"), "canned-fruit")
+    check("「罐头」解析出来的图真的存在",
+          bool(_exists(resolve_ingredient_key("罐头") or "")), True)
+
+    print("\n=== 2c-2. 泛称词不能退到「其他」万能图 ===")
+    # 和「罐头」同一个坑：词库和分类器都认不出来的泛称，
+    # 会退到「其他」分类的万能图 —— 那张图是香菇+红枣，
+    # 配「主食」「零食」这种词看着就是配错了。
+    #
+    # ⚠️ 这里**只测明确的泛称词**。真正的坑是「任何一个没见过的词都会
+    # 退到香菇红枣」，那要靠给分类器补词解决，不是这个文件的范围。
+    for name, want in [
+        ("主食", "_universal-staple"),
+        ("零食", "_universal-snack"),
+        ("调料", "_universal-seasoning"),
+        ("调味料", "_universal-seasoning"),
+        ("豆制品", "_universal-soy"),
+        ("咸菜", "_universal-vegetable"),
+    ]:
+        got = resolve_ingredient_key(name)
+        check(f"{name} -> {want}", got, want)
+
+    # ⚠️ 子串规则会抢词，所以「主食面包」必须排在「主食」之前。
+    # 这是超市里真实存在的叫法，配面包的图比配主食万能图准。
+    check("「主食面包」仍然走面包的图（不被「主食」抢走）",
+          resolve_ingredient_key("主食面包"), "bread")
+    check("「全谷物面包」仍然走面包的图（没有被「谷物」类规则抢走）",
+          resolve_ingredient_key("全谷物面包"), "bread")
 
     print("\n=== 2d. 后补的 5 个 key（红葡萄 / 八宝粥 / 即食麦片等）===")
     # 这几个是 2026-10-06 补图的。关键是它们**不能被更短的名字抢走**：
@@ -196,15 +252,21 @@ def main() -> int:
     # 静默退到万能图 —— 不报错，很难发现。
     import re as _re
 
+    # ⚠️ 允许开头一个下划线：`_universal-*` 是**分类万能图**的命名约定，
+    # 它们也是真实存在的图。规则可以直接指向它们 ——
+    # 比如「主食」没有专属图，但「主食」这个分类有万能图。
+    # 不带下划线的普通 key 仍然必须是小写字母/数字/短横线。
+    KEY_PATTERN = r"_?[a-z0-9]+(-[a-z0-9]+)*"
+
     bad_targets = [
         f"{k} -> {v}" for k, v in EXTRA_ALIASES.items()
-        if not _re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", v)
+        if not _re.fullmatch(KEY_PATTERN, v)
     ]
     check("EXTRA_ALIASES 的值都是合法的 key（小写字母数字短横线）", bad_targets, [])
 
     bad_guard = [
         f"{kws[0]} -> {v}" for kws, v in GUARD_RULES
-        if not _re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", v)
+        if not _re.fullmatch(KEY_PATTERN, v)
     ]
     check("GUARD_RULES 的值都是合法的 key", bad_guard, [])
 
@@ -215,6 +277,14 @@ def main() -> int:
         if not _exists(v) and v not in NO_IMAGE_BY_DESIGN
     ]
     check("别名的值都指向真实存在的图", dangling, [])
+
+    # ⚠️ GUARD_RULES 也要查一遍 —— 这类错在挡刀区更隐蔽：
+    # 规则排在词库前面，一旦指向不存在的 key，那一整批词全都会静默退到万能图。
+    dangling_guard = [
+        f"{kws[0]} -> {v}" for kws, v in GUARD_RULES
+        if not _exists(v) and v not in NO_IMAGE_BY_DESIGN
+    ]
+    check("GUARD_RULES 的值都指向真实存在的图", dangling_guard, [])
 
     print("\n=== 7. 关键词兜底：词库完全没有的写法 ===")
     # 这一级是最后一道防线，用构造出来的名字测（真实食材基本都被词库覆盖了）
