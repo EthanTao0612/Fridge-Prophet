@@ -392,12 +392,16 @@ fun HomeScreen(
 
         if (state.items.isEmpty() && state.recommendations.isEmpty() && state.error == null) {
             item {
-                Box(Modifier.fillMaxWidth().height(80.dp)) {
-                    EmptyState(
-                        title = "从扫描开始",
-                        description = "冰箱里有东西，我才能告诉你今天吃什么",
-                    )
-                }
+                // ⚠️ 这里**不要**套固定高度的 Box。
+                // 原来写的是 `.height(80.dp)`，而 EmptyState 的内容
+                //（32dp 上下内边距 + 标题 + 间距 + 描述）需要 110dp 左右 ——
+                // 结果「从扫描开始」的标题下半截被裁掉，看起来像字体坏了。
+                // 用 compact 让它自己在列表里撑开。
+                EmptyState(
+                    title = "冰箱还空着",
+                    description = "先拍一张照片，我看看里面有什么",
+                    compact = true,
+                )
             }
         }
 

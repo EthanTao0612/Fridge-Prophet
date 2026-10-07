@@ -194,12 +194,26 @@ fun EmptyState(
     actionText: String? = null,
     onAction: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
+    /**
+     * 紧凑模式：**嵌在列表里**用（不是整页空状态）时打开。
+     *
+     * 默认的 32dp 内边距是给「整页空状态」留的呼吸感；
+     * 嵌在 LazyColumn 的一个 item 里时，32dp 上下 + 标题 + 间距 + 描述
+     * 一共要 110dp 左右 —— 如果外面还套了个固定高度的 Box，**底部会被裁掉**。
+     *
+     * ⚠️ 2026-10-07 踩过：首页的「从扫描开始」被套在 `height(80.dp)` 里，
+     * 结果标题下半截被切掉，看起来像字体渲染坏了。
+     * **嵌在列表里的空状态一律用 compact = true，并且不要在外面套固定高度。**
+     */
+    compact: Boolean = false,
 ) {
+    val pad = if (compact) 16.dp else 32.dp
+    val gap = if (compact) 6.dp else 10.dp
     Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Column(
-            modifier = Modifier.padding(32.dp),
+            modifier = Modifier.padding(pad),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+            verticalArrangement = Arrangement.spacedBy(gap),
         ) {
             Text(
                 text = title,
