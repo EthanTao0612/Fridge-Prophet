@@ -6,7 +6,7 @@
 #  用法（在服务器上，root 或 sudo）：
 #
 #      bash deploy.sh 你的域名
-#      bash deploy.sh 1.2.3.4.nip.io          # 没域名时用 nip.io
+#      bash deploy.sh 你的域名.com             # 建议用真域名（见下面关于 nip.io 的警告）
 #
 #  想换通知邮箱（certbot 要用，证书过期前会提醒）：
 #
@@ -220,10 +220,13 @@ if [ -z "$DOMAIN" ]; then
     echo "用法： bash deploy.sh 你的域名"
     echo
     echo "  有域名：  bash deploy.sh api.example.com"
-    echo "  没域名：  bash deploy.sh 1.2.3.4.nip.io   （换成你的服务器 IP）"
+    echo "  没域名：  bash deploy.sh 1.2.3.4.nip.io   ⚠️ 国内会被拦，仅本机自测/境外可用"
     echo
     echo "  没域名也能跑 —— 用 nip.io 这个泛解析服务，"
     echo "  \`1.2.3.4.nip.io\` 会自动解析回 1.2.3.4，certbot 也认。"
+    echo "  ⚠️ 但 nip.io 在国内被 DPI 拦截（2026-10-07 实测）："
+    echo "     真机上 App 会报「网络异常」，而服务器本机和境外访问都正常。"
+    echo "     国内演示**必须用真域名**。"
     echo
     echo "  想先看它到底会做什么：  bash deploy.sh --help"
     echo "  想只跑纯逻辑自测：      bash deploy.sh --selftest"
