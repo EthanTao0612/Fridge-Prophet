@@ -1,0 +1,186 @@
+<html><head><meta charset="utf-8"><style>body{font-family:"微软雅黑",sans-serif;font-size:11pt;line-height:1.7}h1{font-size:18pt}h2{font-size:15pt}h3{font-size:13pt}table{font-size:10pt}th,td{vertical-align:top}code{background:#f5f5f5;padding:1px 4px}</style></head><body><h1>冰箱先知 Fridge Prophet · 源代码说明</h1>
+<blockquote style="border-left:3px solid #ccc;margin-left:0;padding-left:12px;color:#444">
+<p><b>参赛作品</b>：冰箱先知（Fridge Prophet）</p>
+<p><b>团队</b>：严睿（队长）、陶高杰、陈浩、黄鑫蔚、曹洋海</p>
+<p><b>版本</b>：v1.0.2　　<b>提交日期</b>：2026 年 　 月 　 日</p>
+<p></p>
+<p>本文档说明本作品源代码中<b>哪些是团队原创</b>、<b>使用了哪些第三方开源代码</b>，</p>
+<p>以及<b>参考/改编了哪些公开资料</b>。</p>
+</blockquote>
+<hr/>
+<h2>一、代码规模总览</h2>
+<table border="1" cellpadding="5" cellspacing="0" style="border-collapse:collapse;width:100%">
+<tr><th style="background:#f0f0f0">部分</th><th style="background:#f0f0f0">语言</th><th style="background:#f0f0f0">规模</th></tr>
+<tr><td>Android 客户端</td><td>Kotlin（Jetpack Compose）</td><td>137 个源文件</td></tr>
+<tr><td>后端服务</td><td>Python 3.13（FastAPI）</td><td>67 个 Python 文件</td></tr>
+<tr><td>数据库</td><td>SQLAlchemy 2.0 模型</td><td>22 张表</td></tr>
+<tr><td>自动化测试</td><td>Python + Kotlin</td><td>后端 670 项 / Android 20 项</td></tr>
+<tr><td>构建与部署脚本</td><td>Shell / Python / Batch</td><td>11 个工具脚本</td></tr>
+</table>
+<hr/>
+<h2>二、团队原创部分</h2>
+<p><b>以下全部为本团队从零编写，不含第三方代码：</b></p>
+<h3>2.1 后端服务（<code>backend/app/</code>）</h3>
+<table border="1" cellpadding="5" cellspacing="0" style="border-collapse:collapse;width:100%">
+<tr><th style="background:#f0f0f0">模块</th><th style="background:#f0f0f0">文件</th><th style="background:#f0f0f0">原创内容</th></tr>
+<tr><td><b>接口层</b></td><td><code>api/v1/*.py</code></td><td>全部 60+ 个 REST 接口的定义、参数校验、权限判定</td></tr>
+<tr><td><b>业务层</b></td><td><code>services/*.py</code></td><td>食材匹配五级降级算法、菜谱推荐、缺料计算、采购清单生成、做菜扣减、家庭组可见范围、AI 配额、邮箱验证码、新鲜度计算</td></tr>
+<tr><td><b>数据模型</b></td><td><code>models/*.py</code></td><td>22 张表的 SQLAlchemy 2.0 模型与关系设计</td></tr>
+<tr><td><b>内容库</b></td><td><code>data/food_tips.py</code></td><td>89 条食品安全小贴士（含权威来源标注）</td></tr>
+<tr><td><b>配置与依赖</b></td><td><code>core/*.py</code>、<code>deps.py</code></td><td>配置加载、JWT 鉴权、数据库会话管理、统一依赖注入</td></tr>
+</table>
+<p><b>其中最具技术含量的原创算法：</b></p>
+<ul>
+<li><b>食材匹配五级降级</b>（<code>ingredient_image_service.py</code>）</li>
+</ul>
+<p>  挡刀区规则 → 词库精确 → 别名 → 词库子串（最长优先）→ 关键词兜底。</p>
+<p>  让「肥羊肉」「内蒙古羔羊肉」这类词库没有的写法也能正确配图。</p>
+<ul>
+<li><b>菜谱读/写可见范围分离</b>（<code>recipe_service.py</code>）</li>
+</ul>
+<p>  <code>readable_recipe_clause</code> / <code>editable_recipe_clause</code> —— 系统内置菜谱</p>
+<p>  所有用户共用一条记录，必须禁止用户删除或改写。</p>
+<ul>
+<li><b>AI 每日配额双闸</b>（<code>quota_service.py</code>）</li>
+</ul>
+<p>  按用户限流 + 全站限流，给账单兜底。</p>
+<h3>2.2 Android 客户端（<code>android/app/src/main/java/</code>）</h3>
+<table border="1" cellpadding="5" cellspacing="0" style="border-collapse:collapse;width:100%">
+<tr><th style="background:#f0f0f0">模块</th><th style="background:#f0f0f0">原创内容</th></tr>
+<tr><td><b>界面层</b></td><td>全部 Compose 页面（首页 / 冰箱 / 菜谱 / 采购 / 广场 / 我的 / 扫描 / 登录 / 引导 / 家庭 / 小贴士），共 30+ 个 Composable</td></tr>
+<tr><td><b>状态层</b></td><td>全部 ViewModel 的业务逻辑（乐观更新、防抖、并发请求编排）</td></tr>
+<tr><td><b>数据层</b></td><td>Retrofit 接口定义、DTO、仓库封装、DataStore 本地存储</td></tr>
+<tr><td><b>组件层</b></td><td><code>ui/components/</code> —— 图片加载（自研 OkHttp + BitmapFactory，未引入图片库）、图片压缩与 EXIF 转正、空状态、卡片、动作按钮等</td></tr>
+<tr><td><b>主题</b></td><td><code>ui/theme/</code> —— 配色、字体、形状体系</td></tr>
+</table>
+<p><b>其中值得一提的原创实现：</b></p>
+<ul>
+<li><b>图片上传前压缩 + EXIF 转正</b>（<code>PickedImage.kt</code>）</li>
+</ul>
+<p>  实测把 4096×3072 / 2.0MB 压到 1200×1600 / 163KB（省 92%），</p>
+<p>  并手动读取 <code>android.media.ExifInterface</code> 修正旋转（重编码会丢 EXIF）。</p>
+<ul>
+<li><b>自研图片加载</b>（<code>RemoteImage.kt</code>）</li>
+</ul>
+<p>  没有引入 Coil 等图片库 —— 本项目依赖矩阵较脆（曾因引入 Coil 3</p>
+<p>  触发 Gradle 依赖图序列化异常），改用 OkHttp + BitmapFactory + 内存缓存。</p>
+<ul>
+<li><b>乐观更新 + 防抖 350ms</b>（<code>ProfileViewModel.kt</code> 等）</li>
+</ul>
+<p>  开关类设置不等服务器回包，失败才回滚。</p>
+<h3>2.3 内容资产（数据而非代码，但同样是原创产出）</h3>
+<table border="1" cellpadding="5" cellspacing="0" style="border-collapse:collapse;width:100%">
+<tr><th style="background:#f0f0f0">资产</th><th style="background:#f0f0f0">数量</th><th style="background:#f0f0f0">来源</th></tr>
+<tr><td>食材配图</td><td><b>614 张</b></td><td>陈浩使用外部 AI 生图工具生成（统一提示词模板，见 <code>docs/10</code>）</td></tr>
+<tr><td>菜谱配图</td><td><b>203 张</b></td><td>同上</td></tr>
+<tr><td>菜品库</td><td><b>192 道</b></td><td>黄鑫蔚、曹洋海甄选菜名与食材搭配；做法/营养由 AI 离线生成后人工核对</td></tr>
+<tr><td>食材词库</td><td><b>579 条</b></td><td>由 <code>ingredients-manifest.csv</code> 自动生成（<code>tools/build-ingredient-lexicon.py</code>）</td></tr>
+<tr><td>食品小贴士</td><td><b>89 条</b></td><td>团队撰写，每条标注权威来源</td></tr>
+</table>
+<blockquote style="border-left:3px solid #ccc;margin-left:0;padding-left:12px;color:#444">
+<p><b>图片版权说明</b>：所有配图由团队使用 AI 生图工具按统一提示词生成，</p>
+<p>或由团队成员自行拍摄/制作，<b>不包含任何从互联网下载的受版权保护的图片</b>。</p>
+<p>提示词模板见 <code>docs/10-食材图生成提示词.md</code>。</p>
+</blockquote>
+<h3>2.4 工具与部署脚本（<code>tools/</code>）</h3>
+<p><code>deploy.sh</code>（一键部署，13 步）、<code>import-images.py</code>（图片导入压缩）、</p>
+<p><code>build-ingredient-lexicon.py</code>（词库生成）、<code>build-dish-library.py</code>（菜品库生成）、</p>
+<p><code>generate-dish-recipes.py</code>（离线生成 192 道菜做法）、<code>seed-dish-recipes.py</code>（灌库）、</p>
+<p><code>smoke_http.py</code>（HTTP 冒烟测试）—— <b>全部为团队原创</b>。</p>
+<hr/>
+<h2>三、使用的第三方开源代码</h2>
+<p><b>本作品未修改任何第三方库的源码</b>，全部以依赖形式引入，通过公开 API 调用。</p>
+<h3>3.1 Android 客户端依赖</h3>
+<table border="1" cellpadding="5" cellspacing="0" style="border-collapse:collapse;width:100%">
+<tr><th style="background:#f0f0f0">库</th><th style="background:#f0f0f0">版本</th><th style="background:#f0f0f0">许可证</th><th style="background:#f0f0f0">用途</th></tr>
+<tr><td>Kotlin</td><td>2.2.21</td><td>Apache-2.0</td><td>开发语言与标准库</td></tr>
+<tr><td>Android Gradle Plugin</td><td>8.13.2</td><td>Apache-2.0</td><td>构建工具</td></tr>
+<tr><td>AndroidX Core KTX</td><td>1.17.0</td><td>Apache-2.0</td><td>Android 基础扩展</td></tr>
+<tr><td>AndroidX Activity Compose</td><td>1.11.0</td><td>Apache-2.0</td><td>Activity 与 Compose 集成</td></tr>
+<tr><td>AndroidX Lifecycle（runtime / viewmodel-compose）</td><td>2.9.4</td><td>Apache-2.0</td><td>生命周期与 ViewModel</td></tr>
+<tr><td>AndroidX Navigation Compose</td><td>2.9.5</td><td>Apache-2.0</td><td>页面导航</td></tr>
+<tr><td>AndroidX DataStore Preferences</td><td>1.1.7</td><td>Apache-2.0</td><td>本地键值存储（登录令牌）</td></tr>
+<tr><td>Jetpack Compose BOM</td><td>2025.12.01</td><td>Apache-2.0</td><td>Compose 全套 UI 框架</td></tr>
+<tr><td>Compose Material 3</td><td>随 BOM</td><td>Apache-2.0</td><td>Material Design 3 组件</td></tr>
+<tr><td>AndroidX CameraX（core / camera2 / lifecycle / view）</td><td>1.6.2</td><td>Apache-2.0</td><td>相机拍照</td></tr>
+<tr><td>Hilt（hilt-android / compiler）</td><td>2.58</td><td>Apache-2.0</td><td>依赖注入</td></tr>
+<tr><td>AndroidX Hilt Navigation Compose</td><td>1.3.0</td><td>Apache-2.0</td><td>Hilt 与导航集成</td></tr>
+<tr><td>Retrofit</td><td>2.12.0</td><td>Apache-2.0</td><td>HTTP 客户端</td></tr>
+<tr><td>Retrofit kotlinx-serialization Converter</td><td>1.0.0</td><td>Apache-2.0</td><td>JSON 转换器</td></tr>
+<tr><td>OkHttp（okhttp / logging-interceptor）</td><td>4.12.0</td><td>Apache-2.0</td><td>网络底层与日志</td></tr>
+<tr><td>kotlinx.serialization JSON</td><td>1.9.0</td><td>Apache-2.0</td><td>JSON 序列化</td></tr>
+<tr><td>KSP</td><td>2.2.21-2.0.5</td><td>Apache-2.0</td><td>注解处理器</td></tr>
+<tr><td>JUnit 4</td><td>4.13.2</td><td><b>EPL-1.0</b></td><td>单元测试（仅测试期）</td></tr>
+<tr><td>OkHttp MockWebServer</td><td>4.12.0</td><td>Apache-2.0</td><td>契约测试（仅测试期）</td></tr>
+</table>
+<h3>3.2 后端依赖</h3>
+<table border="1" cellpadding="5" cellspacing="0" style="border-collapse:collapse;width:100%">
+<tr><th style="background:#f0f0f0">库</th><th style="background:#f0f0f0">版本</th><th style="background:#f0f0f0">许可证</th><th style="background:#f0f0f0">用途</th></tr>
+<tr><td>FastAPI</td><td>0.115.6</td><td>MIT</td><td>Web 框架</td></tr>
+<tr><td>Uvicorn</td><td>0.34.0</td><td>BSD-3-Clause</td><td>ASGI 服务器</td></tr>
+<tr><td>SQLAlchemy</td><td>2.0.36</td><td>MIT</td><td>ORM</td></tr>
+<tr><td>Pydantic / pydantic-settings</td><td>2.10.4 / 2.7.0</td><td>MIT</td><td>数据校验与配置</td></tr>
+<tr><td>email-validator</td><td>2.2.0</td><td>CC0-1.0</td><td>邮箱格式校验</td></tr>
+<tr><td>python-multipart</td><td>0.0.20</td><td>Apache-2.0</td><td>文件上传解析</td></tr>
+<tr><td>PyJWT</td><td>2.10.1</td><td>MIT</td><td>JWT 令牌签发与校验</td></tr>
+<tr><td>bcrypt</td><td>4.2.1</td><td>Apache-2.0</td><td>密码哈希</td></tr>
+<tr><td>openai</td><td>1.59.6</td><td>Apache-2.0</td><td>调用通义千问（兼容 OpenAI 协议）</td></tr>
+<tr><td>httpx</td><td>0.28.1</td><td>BSD-3-Clause</td><td>异步 HTTP 客户端</td></tr>
+<tr><td><b>psycopg[binary]</b></td><td>3.2.3</td><td><b>LGPL-3.0</b></td><td>PostgreSQL 驱动</td></tr>
+<tr><td>python-dotenv</td><td>1.2.3</td><td>BSD-3-Clause</td><td>读取 <code>.env</code></td></tr>
+<tr><td>PyYAML</td><td>6.0.3</td><td>MIT</td><td>YAML 解析（CI 配置）</td></tr>
+</table>
+<blockquote style="border-left:3px solid #ccc;margin-left:0;padding-left:12px;color:#444">
+<p><b>关于 LGPL-3.0（psycopg）的说明</b>：</p>
+<p>本作品<b>未修改 psycopg 源码</b>，仅以二进制依赖形式动态调用，</p>
+<p>符合 LGPL-3.0 对「动态链接使用」的要求，不影响本作品代码的授权方式。</p>
+</blockquote>
+<h3>3.3 外部服务（非开源代码，属第三方服务）</h3>
+<table border="1" cellpadding="5" cellspacing="0" style="border-collapse:collapse;width:100%">
+<tr><th style="background:#f0f0f0">服务</th><th style="background:#f0f0f0">用途</th></tr>
+<tr><td>阿里云百炼 · 通义千问（<code>qwen-vl-max</code>）</td><td>拍照识别食材</td></tr>
+<tr><td>Supabase（PostgreSQL + Storage）</td><td>生产数据库与图片存储</td></tr>
+<tr><td>163 邮箱 SMTP</td><td>发送注册验证码</td></tr>
+<tr><td>腾讯云轻量应用服务器</td><td>部署运行环境</td></tr>
+<tr><td>Let's Encrypt</td><td>HTTPS 证书</td></tr>
+</table>
+<hr/>
+<h2>四、引用与改编说明</h2>
+<p><b>本作品不存在直接复制粘贴第三方项目代码的情况。</b> 以下为参考公开资料的部分：</p>
+<table border="1" cellpadding="5" cellspacing="0" style="border-collapse:collapse;width:100%">
+<tr><th style="background:#f0f0f0">参考内容</th><th style="background:#f0f0f0">来源性质</th><th style="background:#f0f0f0">说明</th></tr>
+<tr><td>CameraX 预览与拍照流程</td><td>官方开发文档示例</td><td>采用官方推荐的 <code>PreviewView</code> + <code>ImageCapture</code> 用法，属通用写法</td></tr>
+<tr><td>Jetpack Compose 导航写法</td><td>官方开发文档示例</td><td><code>NavHost</code> / <code>composable</code> 的标准用法</td></tr>
+<tr><td>Retrofit + kotlinx-serialization 集成</td><td>库官方文档</td><td><code>Json.asConverterFactory()</code> 的标准接法</td></tr>
+<tr><td>Material 3 组件用法</td><td>官方设计规范</td><td>直接使用 Material 3 组件，未自定义实现</td></tr>
+<tr><td>食品安全知识内容</td><td>公开学术文献与权威机构发布</td><td>89 条小贴士均在 <code>source</code> 字段标注具体来源（如 FDA、WHO、《中国居民膳食指南》等）</td></tr>
+</table>
+<p><b>所有参考均为「公开文档 + 通用写法」层面，不涉及具体项目的代码搬运。</b></p>
+<p>团队自行编写了全部业务逻辑、算法、界面与数据结构设计。</p>
+<hr/>
+<h2>五、原创性声明</h2>
+<p>本团队郑重声明：</p>
+<ol>
+<li>本作品（含源代码、数据库设计、界面设计、内容库）为团队成员独立完成，</li>
+</ol>
+<p>   <b>不存在抄袭、复制他人作品的情况</b>。</p>
+<ol>
+<li>所使用的第三方组件均为公开发布的开源软件，通过包管理器正常引入，</li>
+</ol>
+<p>   <b>未修改其源码</b>，且遵守各自的开源许可协议。</p>
+<ol>
+<li>所有配图、文案、菜品数据均为团队原创或使用 AI 工具生成，</li>
+</ol>
+<p>   <b>不包含未经授权使用的他人作品</b>。</p>
+<ol>
+<li>本作品未参加过其他竞赛，未公开发布过。</li>
+</ol>
+<table border="1" cellpadding="5" cellspacing="0" style="border-collapse:collapse;width:100%">
+<tr><th style="background:#f0f0f0">成员</th><th style="background:#f0f0f0">分工</th></tr>
+<tr><td>严睿（队长）</td><td>项目统筹</td></tr>
+<tr><td>陶高杰</td><td>后端 API / Android 客户端 / 数据库设计 / 部署上线</td></tr>
+<tr><td>陈浩</td><td>食材与菜品配图</td></tr>
+<tr><td>黄鑫蔚 · 曹洋海</td><td>数据库内容甄选</td></tr>
+</table>
+<p><b>全体成员签名</b>：＿＿＿＿＿＿＿＿＿＿＿＿＿＿＿＿＿＿</p>
+<p><b>日期</b>：2026 年 　 月 　 日</p></body></html>
